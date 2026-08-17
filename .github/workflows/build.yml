@@ -73,4 +73,13 @@ jobs:
             --length 1 --signature test \
             --notes CHANGELOG.md
           python3 -c "import xml.etree.ElementTree as ET; ET.parse('$RUNNER_TEMP/appcast.xml')"
-          bash -n Tools/sign_app.sh Tools/make_dmg.sh Tools/notarize.sh
+          bash -n Tools/sign_app.sh Tools/make_dmg.sh Tools/notarize.sh \
+                  Tools/release_local.sh Tools/setup_secrets.sh
+
+      - name: Check the website still matches the app's themes
+        run: |
+          # The landing page lets visitors try every built-in theme, which is
+          # only true if it knows the same palettes the app does. A stale copy
+          # looks exactly like a correct one, so it's checked rather than
+          # trusted.
+          Tools/sync_themes.py --check

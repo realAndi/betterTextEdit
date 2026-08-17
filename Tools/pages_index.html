@@ -1,94 +1,555 @@
 <!DOCTYPE html>
 <!--
-  The landing page for the GitHub Pages site that hosts appcast.xml.
+  The landing page for betterTextEdit, served from GitHub Pages alongside
+  appcast.xml (the feed installed copies check for updates).
 
-  The feed has to be served from somewhere, and a bare directory listing at the
-  root of a download host is a poor thing to hand someone who followed a link.
-  This is copied into place by the release workflow; it is static, so nothing
-  here needs regenerating per release — the download button points at GitHub's
-  "latest release" redirect, which always resolves to the newest .dmg.
+  The palettes below are the real ones, lifted from BuiltInThemes.swift. That
+  matters: the app's claim is that a theme is a whole palette rather than a few
+  accents sprinkled on a default, so the page demonstrates it by wearing them —
+  pick a theme and the entire site retunes, not just the code sample.
+
+  Copied into place by the release workflow, so edit it here rather than on the
+  gh-pages branch, which is regenerated.
+
+  To drop in real screenshots, replace the .shot-frame contents in the
+  Screenshots section with <img src="…"> — see the comment there.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>betterTextEdit</title>
+<title>betterTextEdit — a native Mac text editor</title>
+<meta name="description" content="A text editor for macOS, written in Swift. Code, rich text, Markdown, PDFs and images in one window. 21 built-in themes.">
 <style>
-  :root {
-    color-scheme: light dark;
-    --bg: #ffffff;
-    --fg: #1c1c1e;
-    --muted: #6b6b70;
-    --edge: #e2e2e6;
-    --accent: #2f6fed;
-    --accent-fg: #ffffff;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #131316;
-      --fg: #ececf1;
-      --muted: #9a9aa2;
-      --edge: #2b2b31;
-      --accent: #5b8dff;
-      --accent-fg: #0d0d10;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    padding: 12vh 24px 64px;
-    background: var(--bg);
-    color: var(--fg);
-    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    display: flex;
-    justify-content: center;
-  }
-  main { width: 100%; max-width: 34rem; }
-  h1 { font-size: 2.25rem; letter-spacing: -0.02em; margin: 0 0 .4rem; }
-  p.lede { color: var(--muted); margin: 0 0 2.25rem; font-size: 1.0625rem; }
-  .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 2.5rem; }
-  a.button {
-    display: inline-block;
-    padding: .6rem 1.15rem;
-    border-radius: .55rem;
-    text-decoration: none;
-    font-weight: 550;
-    border: 1px solid var(--edge);
-    color: var(--fg);
-  }
-  a.button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
-  footer {
-    border-top: 1px solid var(--edge);
-    padding-top: 1.25rem;
-    color: var(--muted);
-    font-size: .9375rem;
-  }
-  code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: .875em;
-    background: color-mix(in srgb, var(--fg) 8%, transparent);
-    padding: .15em .4em;
-    border-radius: .3em;
-  }
+/* ─────────────────────────────────────────────────────────────
+   Tokens. Every one is set from the chosen palette by applyTheme(),
+   so there are no hard-coded colours below this block.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --bg:#1a1b26; --fg:#a9b1d6; --panel:#24283b; --edge:#292e42;
+  --accent:#7aa2f7; --muted:#565f89; --sel:#33467c; --caret:#c0caf5;
+  --kw:#bb9af7; --str:#9ece6a; --com:#565f89; --num:#ff9e64;
+  --typ:#2ac3de; --fn:#7aa2f7; --var:#c0caf5; --op:#89ddff; --pun:#9aa5ce;
+
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+
+  --gut:clamp(1.25rem,4vw,3rem);
+  --max:1080px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.65 var(--sans);
+  transition:background-color .45s ease,color .45s ease;
+  overflow-x:hidden;
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+
+.wrap{max-width:var(--max);margin:0 auto;padding-inline:var(--gut)}
+
+/* Structural label. Mono because it's metadata, not prose — the same
+   distinction the app draws between chrome and content. */
+.eyebrow{
+  font:600 clamp(.62rem,1.4vw,.7rem)/1 var(--mono);
+  letter-spacing:.18em; text-transform:uppercase; color:var(--muted);
+  display:flex; flex-wrap:wrap; gap:.55rem; align-items:center;
+}
+.eyebrow .dot{width:3px;height:3px;border-radius:50%;background:var(--muted);flex:none}
+
+.sec-title{
+  font:800 clamp(1.5rem,3.4vw,2.1rem)/1.15 var(--sans);
+  letter-spacing:-.028em; margin:.7rem 0 .5rem; color:var(--caret);
+}
+.sec-lede{max-width:56ch;color:var(--muted);margin:0 0 2.2rem;font-size:1.02rem}
+
+/* ── Hero ─────────────────────────────────────────────────── */
+.hero{padding:clamp(3.5rem,9vw,6.5rem) 0 0}
+.title{
+  font:800 clamp(2.6rem,8.5vw,5rem)/.95 var(--sans);
+  letter-spacing:-.045em; margin:1rem 0 0; color:var(--caret);
+}
+/* The one flourish: the half of the name that is the argument. */
+.title em{font-style:normal;color:var(--accent)}
+.tagline{
+  font-size:clamp(1.05rem,2.4vw,1.3rem); max-width:38ch;
+  margin:1.1rem 0 0; color:var(--fg);
+}
+.cta-row{display:flex;flex-wrap:wrap;gap:.7rem;align-items:center;margin:1.9rem 0 0}
+.btn{
+  display:inline-flex;align-items:center;gap:.5rem;
+  padding:.68rem 1.3rem;border-radius:.6rem;
+  font:600 .95rem var(--sans);text-decoration:none;
+  border:1px solid var(--edge);color:var(--fg);background:var(--panel);
+  transition:transform .15s ease,border-color .2s ease;
+}
+.btn:hover{transform:translateY(-1px);border-color:var(--accent)}
+.btn-primary{background:var(--accent);border-color:transparent;color:var(--bg)}
+.btn-primary:hover{border-color:transparent}
+.meta{font:.8rem/1.5 var(--mono);color:var(--muted)}
+
+/* ── The window: signature element ────────────────────────── */
+.win{
+  margin-top:clamp(2.5rem,6vw,4rem);
+  border:1px solid var(--edge); border-radius:12px; overflow:hidden;
+  background:var(--bg);
+  box-shadow:0 24px 70px -30px rgba(0,0,0,.75),0 2px 8px -4px rgba(0,0,0,.5);
+  transition:background-color .45s ease,border-color .45s ease;
+}
+.win-bar{
+  display:flex;align-items:center;gap:.75rem;
+  padding:.6rem .85rem;background:var(--panel);border-bottom:1px solid var(--edge);
+}
+.lights{display:flex;gap:.42rem;flex:none}
+.lights i{width:11px;height:11px;border-radius:50%;background:var(--edge);display:block}
+.lights i:first-child{background:var(--accent);opacity:.85}
+.tabs{display:flex;gap:.2rem;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{
+  font:500 .76rem var(--mono);padding:.24rem .6rem;border-radius:.35rem;
+  color:var(--muted);white-space:nowrap;border:1px solid transparent;
+}
+.tab[aria-selected="true"]{color:var(--caret);background:var(--bg);border-color:var(--edge)}
+
+.code{display:flex;font:13px/1.75 var(--mono);overflow-x:auto}
+.gutter{
+  flex:none;padding:1.1rem .85rem 1.4rem;text-align:right;white-space:pre;
+  color:var(--muted);opacity:.55;user-select:none;border-right:1px solid var(--edge);
+}
+.src{padding:1.1rem 1.2rem 1.4rem;white-space:pre;min-width:0}
+.kw{color:var(--kw)} .str{color:var(--str)} .com{color:var(--com);font-style:italic}
+.num{color:var(--num)} .typ{color:var(--typ)} .fn{color:var(--fn)}
+.va{color:var(--var)} .op{color:var(--op)} .pun{color:var(--pun)}
+.cursor{
+  display:inline-block;width:2px;height:1.05em;background:var(--caret);
+  vertical-align:text-bottom;animation:blink 1.15s steps(2) infinite;
+}
+@keyframes blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}
+
+.win-foot{
+  display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+  padding:.5rem .95rem;background:var(--panel);border-top:1px solid var(--edge);
+  font:.72rem var(--mono);color:var(--muted);
+}
+
+/* ── Theme rail ───────────────────────────────────────────── */
+.rail{margin:clamp(2rem,5vw,3rem) 0 0}
+.rail-head{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;flex-wrap:wrap}
+.now{font:.8rem var(--mono);color:var(--fg)}
+.now b{color:var(--accent);font-weight:600}
+.swatches{
+  display:grid;gap:.55rem;margin:1rem 0 0;padding:0;list-style:none;
+  grid-template-columns:repeat(auto-fill,minmax(58px,1fr));
+}
+.sw{
+  width:100%;aspect-ratio:1;border-radius:.55rem;cursor:pointer;
+  border:1px solid var(--edge);padding:.42rem;display:flex;flex-direction:column;
+  justify-content:flex-end;gap:.2rem;position:relative;
+  transition:transform .15s ease,border-color .2s ease;
+}
+.sw:hover{transform:translateY(-2px)}
+.sw[aria-pressed="true"]{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent) inset}
+.sw span{height:3px;border-radius:2px;display:block}
+.sw span:nth-child(1){width:70%} .sw span:nth-child(2){width:45%} .sw span:nth-child(3){width:58%}
+.sw-name{
+  position:absolute;inset:auto 0 calc(100% + .35rem) 0;text-align:center;
+  font:.66rem var(--mono);color:var(--fg);background:var(--panel);
+  border:1px solid var(--edge);border-radius:.3rem;padding:.15rem .3rem;
+  opacity:0;pointer-events:none;transition:opacity .15s ease;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;z-index:2;
+}
+.sw:hover .sw-name,.sw:focus-visible .sw-name{opacity:1}
+
+/* ── Generic section ──────────────────────────────────────── */
+.band{padding:clamp(4rem,10vw,7rem) 0 0}
+
+/* ── Formats ──────────────────────────────────────────────── */
+.fmt-group{margin:0 0 1.6rem}
+.fmt-label{
+  font:600 .68rem var(--mono);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent);margin:0 0 .6rem;
+}
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;padding:0;margin:0;list-style:none}
+.chip{
+  font:.8rem var(--mono);padding:.3rem .6rem;border-radius:.4rem;
+  border:1px solid var(--edge);color:var(--fg);background:var(--panel);
+}
+.chip.is-doc{color:var(--str)} .chip.is-img{color:var(--num)} .chip.is-code{color:var(--typ)}
+
+/* ── Native proof ─────────────────────────────────────────── */
+.grid{display:grid;gap:1px;background:var(--edge);border:1px solid var(--edge);border-radius:10px;overflow:hidden}
+@media (min-width:640px){.grid{grid-template-columns:1fr 1fr}}
+.cell{background:var(--bg);padding:1.5rem 1.4rem}
+.cell h3{font:700 1rem var(--sans);margin:0 0 .4rem;color:var(--caret);letter-spacing:-.01em}
+.cell p{margin:0;color:var(--muted);font-size:.94rem}
+.cell .k{font:.68rem var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent);display:block;margin:0 0 .55rem}
+
+/* ── Screenshots ──────────────────────────────────────────── */
+.shots{display:grid;gap:1.1rem}
+@media (min-width:760px){.shots{grid-template-columns:1fr 1fr}}
+.shot{margin:0}
+.shot-frame{
+  border:1px solid var(--edge);border-radius:10px;overflow:hidden;background:var(--panel);
+  aspect-ratio:16/10;display:flex;align-items:center;justify-content:center;
+  position:relative;
+}
+.shot-frame img{width:100%;height:100%;object-fit:cover;display:block}
+.shot-ph{text-align:center;padding:1rem;color:var(--muted)}
+.shot-ph .ico{font:300 1.9rem/1 var(--mono);color:var(--edge);display:block;margin:0 0 .5rem}
+.shot-ph .lbl{font:.74rem var(--mono);letter-spacing:.1em;text-transform:uppercase}
+.shot figcaption{margin:.6rem 0 0;font-size:.88rem;color:var(--muted)}
+
+/* ── Footer ───────────────────────────────────────────────── */
+.foot{
+  margin-top:clamp(4rem,10vw,7rem);border-top:1px solid var(--edge);
+  padding:2.5rem 0 3.5rem;
+}
+.foot-in{display:flex;flex-wrap:wrap;gap:1.2rem;justify-content:space-between;align-items:center}
+.foot a{color:var(--fg)}
+.foot small{font:.78rem var(--mono);color:var(--muted)}
+a{color:var(--accent)}
 </style>
 </head>
 <body>
-<main>
-  <h1>betterTextEdit</h1>
-  <p class="lede">A text editor for macOS. Syntax highlighting, themes, Markdown
-  and rich text, all in one window.</p>
 
-  <div class="actions">
-    <a class="button primary"
-       href="https://github.com/realAndi/betterTextEdit/releases/latest">Download</a>
-    <a class="button"
-       href="https://github.com/realAndi/betterTextEdit">Source on GitHub</a>
+<header class="hero wrap">
+  <p class="eyebrow">
+    <span>Written in Swift</span><i class="dot"></i>
+    <span>SwiftUI &amp; AppKit</span><i class="dot"></i>
+    <span>Universal</span><i class="dot"></i>
+    <span>macOS 26</span>
+  </p>
+
+  <h1 class="title">better<em>TextEdit</em></h1>
+  <p class="tagline">Every file you double-click, opened properly — in one window that looks like it belongs on a Mac.</p>
+
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/realAndi/betterTextEdit/releases/latest">Download for macOS</a>
+    <a class="btn" href="https://github.com/realAndi/betterTextEdit">View source</a>
+    <span class="meta" id="meta">Apple silicon &amp; Intel · ~3 MB · free</span>
   </div>
 
-  <footer>
-    <p>Requires macOS 26 or later. Installed copies update themselves — this
-    site also serves the <a href="appcast.xml">update feed</a> they check.</p>
-  </footer>
+  <!-- Signature: a real editor window, painted by whichever palette is chosen. -->
+  <div class="win">
+    <div class="win-bar">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="tabs" role="tablist" aria-label="Open files">
+        <span class="tab" role="tab" aria-selected="true">ThemeStore.swift</span>
+        <span class="tab" role="tab" aria-selected="false">README.md</span>
+        <span class="tab" role="tab" aria-selected="false">notes.docx</span>
+        <span class="tab" role="tab" aria-selected="false">logo.svg</span>
+        <span class="tab" role="tab" aria-selected="false">invoice.pdf</span>
+      </div>
+    </div>
+
+    <div class="code">
+      <div class="gutter" aria-hidden="true">1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12</div>
+      <div class="src"><span class="kw">import</span> <span class="typ">SwiftUI</span>
+
+<span class="com">/// The theme in force, ready to paint with.</span>
+<span class="op">@MainActor</span>
+<span class="kw">final class</span> <span class="typ">ThemeStore</span><span class="pun">:</span> <span class="typ">ObservableObject</span> <span class="pun">{</span>
+    <span class="kw">static let</span> <span class="va">shared</span> <span class="op">=</span> <span class="typ">ThemeStore</span><span class="pun">()</span>
+
+    <span class="op">@Published</span> <span class="kw">private(set) var</span> <span class="va">current</span><span class="pun">:</span> <span class="typ">ResolvedTheme</span>
+
+    <span class="kw">var</span> <span class="va">effective</span><span class="pun">:</span> <span class="typ">EditorTheme</span> <span class="pun">{</span>
+        <span class="kw">guard let</span> <span class="va">id</span> <span class="op">=</span> <span class="typ">PresetStore</span><span class="pun">.</span><span class="va">shared</span><span class="pun">.</span><span class="fn">preset</span><span class="pun">(</span><span class="kw">for</span><span class="pun">:</span> <span class="va">language</span><span class="pun">)?.</span><span class="va">themeID</span>
+        <span class="kw">else</span> <span class="pun">{</span> <span class="kw">return</span> <span class="va">selected</span> <span class="pun">}</span><span class="cursor"></span></div>
+    </div>
+
+    <div class="win-foot">
+      <span>Swift · UTF-8 · Ln 12, Col 34</span>
+      <span id="footTheme">Tokyo Midnight</span>
+    </div>
+  </div>
+
+  <!-- Theme rail -->
+  <section class="rail" aria-labelledby="themes-h">
+    <div class="rail-head">
+      <p class="eyebrow" id="themes-h"><span>Themes · pick one, the page follows</span></p>
+      <p class="now">Now showing <b id="nowName">Tokyo Midnight</b></p>
+    </div>
+    <ul class="swatches" id="swatches"></ul>
+  </section>
+</header>
+
+<main>
+
+<!-- ── Formats ───────────────────────────────────────────── -->
+<section class="band wrap" aria-labelledby="fmt-h">
+  <p class="eyebrow"><span>One window</span></p>
+  <h2 class="sec-title" id="fmt-h">It opens what you throw at it</h2>
+  <p class="sec-lede">TextEdit shows you a Word file as a wall of XML. This reads the file, works out what it
+  actually is — by extension, then by contents — and opens it in the right editor.</p>
+
+  <div class="fmt-group">
+    <p class="fmt-label">Code &amp; markup — highlighted</p>
+    <ul class="chips">
+      <li class="chip is-code">Swift</li><li class="chip is-code">JavaScript</li>
+      <li class="chip is-code">TypeScript</li><li class="chip is-code">Python</li>
+      <li class="chip is-code">Ruby</li><li class="chip is-code">PHP</li>
+      <li class="chip is-code">Lua</li><li class="chip is-code">C / C++</li>
+      <li class="chip is-code">Rust</li><li class="chip is-code">Go</li>
+      <li class="chip is-code">Java</li><li class="chip is-code">Shell</li>
+      <li class="chip is-code">SQL</li><li class="chip is-code">HTML</li>
+      <li class="chip is-code">CSS</li><li class="chip is-code">XML</li>
+      <li class="chip is-code">JSON</li><li class="chip is-code">YAML</li>
+      <li class="chip is-code">TOML</li><li class="chip is-code">Config</li>
+      <li class="chip is-code">Markdown</li><li class="chip is-code">Plain text</li>
+    </ul>
+  </div>
+
+  <div class="fmt-group">
+    <p class="fmt-label">Documents — read, edited, converted</p>
+    <ul class="chips">
+      <li class="chip is-doc">.docx</li><li class="chip is-doc">.doc</li>
+      <li class="chip is-doc">.odt</li><li class="chip is-doc">.rtf</li>
+      <li class="chip is-doc">.rtfd</li><li class="chip is-doc">.webarchive</li>
+      <li class="chip is-doc">.pdf</li>
+    </ul>
+  </div>
+
+  <div class="fmt-group">
+    <p class="fmt-label">Pictures — viewed, zoomed, exported</p>
+    <ul class="chips">
+      <li class="chip is-img">PNG</li><li class="chip is-img">JPEG</li>
+      <li class="chip is-img">HEIC</li><li class="chip is-img">TIFF</li>
+      <li class="chip is-img">GIF</li><li class="chip is-img">SVG</li>
+    </ul>
+  </div>
+
+  <div class="grid" style="margin-top:2.2rem">
+    <div class="cell">
+      <span class="k">Preview</span>
+      <h3>Markdown, HTML and SVG, side by side</h3>
+      <p>Source on the left, rendered on the right, or either on its own. ⌥⌘1, ⌥⌘2, ⌥⌘3.</p>
+    </div>
+    <div class="cell">
+      <span class="k">Convert</span>
+      <h3>Out the other side</h3>
+      <p>Pull the text and images out of a PDF. Turn a Word file into Markdown. Export SVG as PNG, or anything as PDF.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Native ────────────────────────────────────────────── -->
+<section class="band wrap" aria-labelledby="nat-h">
+  <p class="eyebrow"><span>Not a website in a window</span></p>
+  <h2 class="sec-title" id="nat-h">Native, in the way that shows</h2>
+  <p class="sec-lede">Written in Swift against SwiftUI and AppKit. It starts instantly, weighs about three
+  megabytes, and uses the system's own furniture rather than redrawing approximations of it.</p>
+
+  <div class="grid">
+    <div class="cell">
+      <span class="k">Text engine</span>
+      <h3>AppKit's own</h3>
+      <p>The editor is <code>NSTextView</code> — so spelling, substitutions, Services, the Emoji picker and
+      every key binding you already have muscle memory for are simply there.</p>
+    </div>
+    <div class="cell">
+      <span class="k">Liquid Glass</span>
+      <h3>Three window surfaces</h3>
+      <p>Solid, Glass or Clear. Glass is <code>NSGlassEffectView</code> tinted by the theme, not a blurred
+      screenshot faking it.</p>
+    </div>
+    <div class="cell">
+      <span class="k">System panels</span>
+      <h3>The real Font and Colour windows</h3>
+      <p>⇧⌘T and ⇧⌘C open the panels every Mac app shares, with your favourites already in them.</p>
+    </div>
+    <div class="cell">
+      <span class="k">Binary</span>
+      <h3>Universal, signed, notarised</h3>
+      <p>One build for Apple silicon and Intel, signed with a Developer ID and notarised by Apple, so it
+      opens on a double-click.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Screenshots ───────────────────────────────────────── -->
+<section class="band wrap" aria-labelledby="shot-h">
+  <p class="eyebrow"><span>A look around</span></p>
+  <h2 class="sec-title" id="shot-h">Screenshots</h2>
+  <p class="sec-lede">Four corners of the app: the split preview, the glass surface, the theme gallery, and a
+  Word document opened as rich text.</p>
+
+  <!--
+    Placeholders. To use a real capture, replace the <div class="shot-ph"> inside
+    a frame with <img src="shots/whatever.png" alt=""> and commit the PNG next to
+    this file. The frame is 16:10 and crops with object-fit, so any Retina window
+    capture will sit correctly without resizing.
+  -->
+  <div class="shots">
+    <figure class="shot">
+      <div class="shot-frame">
+        <div class="shot-ph"><span class="ico">⌘</span><span class="lbl">Editor + Markdown preview</span></div>
+      </div>
+      <figcaption>Split view: source on the left, rendered Markdown on the right.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="shot-frame">
+        <div class="shot-ph"><span class="ico">◇</span><span class="lbl">Glass surface</span></div>
+      </div>
+      <figcaption>The Glass window surface over a desktop, tinted by the active theme.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="shot-frame">
+        <div class="shot-ph"><span class="ico">▤</span><span class="lbl">Settings · themes</span></div>
+      </div>
+      <figcaption>The theme gallery, with per-file-type presets underneath.</figcaption>
+    </figure>
+    <figure class="shot">
+      <div class="shot-frame">
+        <div class="shot-ph"><span class="ico">¶</span><span class="lbl">Rich text</span></div>
+      </div>
+      <figcaption>A Word document opened as rich text, with the formatting bar.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ── Close ─────────────────────────────────────────────── -->
+<section class="band wrap" aria-labelledby="dl-h">
+  <p class="eyebrow"><span>Free · open source · updates itself</span></p>
+  <h2 class="sec-title" id="dl-h">Give it your messiest folder</h2>
+  <p class="sec-lede">It checks for new versions once a day and installs them when you say so. Nothing to
+  subscribe to, no account, no telemetry.</p>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="https://github.com/realAndi/betterTextEdit/releases/latest">Download for macOS</a>
+    <a class="btn" href="https://github.com/realAndi/betterTextEdit">Read the source</a>
+  </div>
+</section>
+
 </main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <small>betterTextEdit — <a href="https://github.com/realAndi/betterTextEdit">github.com/realAndi/betterTextEdit</a></small>
+    <small>Requires macOS 26 · <a href="appcast.xml">update feed</a></small>
+  </div>
+</footer>
+
+<script>
+// The app's real palettes, extracted from BuiltInThemes.swift. Keeping them
+// verbatim is the point: the page is showing the product, not an impression
+// of it.
+/* THEMES:BEGIN — generated by Tools/sync_themes.py, do not edit */
+const THEMES = [
+  {"id":"tokyo-midnight","name":"Tokyo Midnight","dark":true,"colors":{"background":"#1a1b26","foreground":"#a9b1d6","currentLine":"#24283b","separator":"#292e42","accent":"#7aa2f7","comment":"#565f89","selection":"#33467c","caret":"#c0caf5","keyword":"#bb9af7","string":"#9ece6a","number":"#ff9e64","type":"#2ac3de","function":"#7aa2f7","variable":"#c0caf5","operator":"#89ddff","punctuation":"#9aa5ce"}},
+  {"id":"sakura-night","name":"Sakura Night","dark":true,"colors":{"background":"#1b1520","foreground":"#ebdfe8","currentLine":"#251d2b","separator":"#332839","accent":"#ff9ec8","comment":"#7d6b82","selection":"#45304a","caret":"#ff9ec8","keyword":"#ff8fc0","string":"#c3e88d","number":"#ffb86c","type":"#9ad8d8","function":"#d7a6ff","variable":"#ebdfe8","operator":"#ff8fc0","punctuation":"#b9a6bb"}},
+  {"id":"kanagawa-wave","name":"Kanagawa Wave","dark":true,"colors":{"background":"#1f1f28","foreground":"#dcd7ba","currentLine":"#223249","separator":"#2a2a37","accent":"#7e9cd8","comment":"#727169","selection":"#2d4f67","caret":"#c8c093","keyword":"#957fb8","string":"#98bb6c","number":"#d27e99","type":"#7aa89f","function":"#7e9cd8","variable":"#dcd7ba","operator":"#c0a36e","punctuation":"#9cabca"}},
+  {"id":"nord-aurora","name":"Nord Aurora","dark":true,"colors":{"background":"#2e3440","foreground":"#d8dee9","currentLine":"#3b4252","separator":"#3b4252","accent":"#88c0d0","comment":"#616e88","selection":"#434c5e","caret":"#d8dee9","keyword":"#81a1c1","string":"#a3be8c","number":"#b48ead","type":"#8fbcbb","function":"#88c0d0","variable":"#d8dee9","operator":"#81a1c1","punctuation":"#eceff4"}},
+  {"id":"dracula","name":"Dracula","dark":true,"colors":{"background":"#282a36","foreground":"#f8f8f2","currentLine":"#343746","separator":"#3b3d4c","accent":"#bd93f9","comment":"#6272a4","selection":"#44475a","caret":"#f8f8f2","keyword":"#ff79c6","string":"#f1fa8c","number":"#bd93f9","type":"#8be9fd","function":"#50fa7b","variable":"#f8f8f2","operator":"#ff79c6","punctuation":"#f8f8f2"}},
+  {"id":"catppuccin-mocha","name":"Catppuccin Mocha","dark":true,"colors":{"background":"#1e1e2e","foreground":"#cdd6f4","currentLine":"#292c3c","separator":"#313244","accent":"#cba6f7","comment":"#6c7086","selection":"#313244","caret":"#f5e0dc","keyword":"#cba6f7","string":"#a6e3a1","number":"#fab387","type":"#f9e2af","function":"#89b4fa","variable":"#cdd6f4","operator":"#89dceb","punctuation":"#9399b2"}},
+  {"id":"gruvbox-dusk","name":"Gruvbox Dusk","dark":true,"colors":{"background":"#282828","foreground":"#ebdbb2","currentLine":"#32302f","separator":"#3c3836","accent":"#fabd2f","comment":"#928374","selection":"#504945","caret":"#ebdbb2","keyword":"#fb4934","string":"#b8bb26","number":"#d3869b","type":"#fabd2f","function":"#b8bb26","variable":"#ebdbb2","operator":"#fe8019","punctuation":"#a89984"}},
+  {"id":"monokai-neon","name":"Monokai Neon","dark":true,"colors":{"background":"#272822","foreground":"#f8f8f2","currentLine":"#3e3d32","separator":"#3e3d32","accent":"#a6e22e","comment":"#75715e","selection":"#49483e","caret":"#f8f8f0","keyword":"#f92672","string":"#e6db74","number":"#ae81ff","type":"#66d9ef","function":"#a6e22e","variable":"#f8f8f2","operator":"#f92672","punctuation":"#f8f8f2"}},
+  {"id":"one-dark","name":"One Dark","dark":true,"colors":{"background":"#282c34","foreground":"#abb2bf","currentLine":"#2c313c","separator":"#3b4048","accent":"#61afef","comment":"#5c6370","selection":"#3e4451","caret":"#528bff","keyword":"#c678dd","string":"#98c379","number":"#d19a66","type":"#e5c07b","function":"#61afef","variable":"#e06c75","operator":"#56b6c2","punctuation":"#abb2bf"}},
+  {"id":"rose-pine","name":"Rosé Pine","dark":true,"colors":{"background":"#191724","foreground":"#e0def4","currentLine":"#21202e","separator":"#26233a","accent":"#c4a7e7","comment":"#6e6a86","selection":"#312f44","caret":"#e0def4","keyword":"#31748f","string":"#f6c177","number":"#ebbcba","type":"#9ccfd8","function":"#ebbcba","variable":"#e0def4","operator":"#908caa","punctuation":"#908caa"}},
+  {"id":"night-owl","name":"Night Owl","dark":true,"colors":{"background":"#011627","foreground":"#d6deeb","currentLine":"#0b2942","separator":"#122d42","accent":"#82aaff","comment":"#637777","selection":"#1d3b53","caret":"#80a4c2","keyword":"#c792ea","string":"#ecc48d","number":"#f78c6c","type":"#ffcb8b","function":"#82aaff","variable":"#d6deeb","operator":"#c792ea","punctuation":"#c5e4fd"}},
+  {"id":"ayu-mirage","name":"Ayu Mirage","dark":true,"colors":{"background":"#1f2430","foreground":"#cbccc6","currentLine":"#242b38","separator":"#2a3140","accent":"#ffcc66","comment":"#5c6773","selection":"#34455a","caret":"#ffcc66","keyword":"#ffa759","string":"#bae67e","number":"#ffcc66","type":"#73d0ff","function":"#ffd580","variable":"#cbccc6","operator":"#f29e74","punctuation":"#8a9199"}},
+  {"id":"everforest","name":"Everforest","dark":true,"colors":{"background":"#2d353b","foreground":"#d3c6aa","currentLine":"#343f44","separator":"#3d484d","accent":"#a7c080","comment":"#859289","selection":"#475258","caret":"#d3c6aa","keyword":"#e67e80","string":"#a7c080","number":"#d699b6","type":"#dbbc7f","function":"#a7c080","variable":"#d3c6aa","operator":"#e69875","punctuation":"#9da9a0"}},
+  {"id":"synthwave-sunset","name":"Synthwave Sunset","dark":true,"colors":{"background":"#262335","foreground":"#f0eff1","currentLine":"#241b2f","separator":"#34294f","accent":"#f97e72","comment":"#848bbd","selection":"#463465","caret":"#f97e72","keyword":"#fede5d","string":"#ff8b39","number":"#f97e72","type":"#fe4450","function":"#36f9f6","variable":"#ff7edb","operator":"#fede5d","punctuation":"#ff7edb"}},
+  {"id":"solarized-dark","name":"Solarized Dark","dark":true,"colors":{"background":"#002b36","foreground":"#93a1a1","currentLine":"#073642","separator":"#073642","accent":"#268bd2","comment":"#586e75","selection":"#0e4b57","caret":"#93a1a1","keyword":"#859900","string":"#2aa198","number":"#d33682","type":"#b58900","function":"#268bd2","variable":"#268bd2","operator":"#859900","punctuation":"#93a1a1"}},
+  {"id":"cherry-sakura","name":"Cherry Sakura","dark":false,"colors":{"background":"#fff4f6","foreground":"#4b3b46","currentLine":"#fdeaf0","separator":"#f6dbe3","accent":"#e4739b","comment":"#b58aa0","selection":"#fbd5e0","caret":"#c2185b","keyword":"#c2185b","string":"#6f8f45","number":"#cf6335","type":"#8e5fbf","function":"#d4568c","variable":"#4b3b46","operator":"#a35d7a","punctuation":"#8a7480"}},
+  {"id":"catppuccin-latte","name":"Catppuccin Latte","dark":false,"colors":{"background":"#eff1f5","foreground":"#4c4f69","currentLine":"#e6e9ef","separator":"#dce0e8","accent":"#8839ef","comment":"#8c8fa1","selection":"#ccd0da","caret":"#dc8a78","keyword":"#8839ef","string":"#40a02b","number":"#fe640b","type":"#df8e1d","function":"#1e66f5","variable":"#4c4f69","operator":"#04a5e5","punctuation":"#7c7f93"}},
+  {"id":"rose-pine-dawn","name":"Rosé Pine Dawn","dark":false,"colors":{"background":"#faf4ed","foreground":"#575279","currentLine":"#fffaf3","separator":"#f2e9e1","accent":"#907aa9","comment":"#9893a5","selection":"#eee4dc","caret":"#575279","keyword":"#286983","string":"#ea9d34","number":"#d7827e","type":"#56949f","function":"#d7827e","variable":"#575279","operator":"#797593","punctuation":"#797593"}},
+  {"id":"gruvbox-dawn","name":"Gruvbox Dawn","dark":false,"colors":{"background":"#fbf1c7","foreground":"#3c3836","currentLine":"#f2e5bc","separator":"#ebdbb2","accent":"#b57614","comment":"#928374","selection":"#ebdbb2","caret":"#3c3836","keyword":"#9d0006","string":"#79740e","number":"#8f3f71","type":"#b57614","function":"#79740e","variable":"#3c3836","operator":"#af3a03","punctuation":"#7c6f64"}},
+  {"id":"solarized-light","name":"Solarized Light","dark":false,"colors":{"background":"#fdf6e3","foreground":"#657b83","currentLine":"#f5efdc","separator":"#eee8d5","accent":"#268bd2","comment":"#93a1a1","selection":"#eee8d5","caret":"#657b83","keyword":"#859900","string":"#2aa198","number":"#d33682","type":"#b58900","function":"#268bd2","variable":"#268bd2","operator":"#859900","punctuation":"#657b83"}},
+  {"id":"paper-white","name":"Paper White","dark":false,"colors":{"background":"#ffffff","foreground":"#24292f","currentLine":"#f6f8fa","separator":"#eaeef2","accent":"#0969da","comment":"#6e7781","selection":"#cfe4ff","caret":"#0969da","keyword":"#cf222e","string":"#0a3069","number":"#0550ae","type":"#953800","function":"#8250df","variable":"#24292f","operator":"#cf222e","punctuation":"#57606a"}},
+];
+/* THEMES:END */
+
+const $ = (s) => document.querySelector(s);
+const KEY = 'bte.theme';
+
+function applyTheme(t) {
+  const c = t.colors, r = document.documentElement.style;
+  const set = (name, value) => value && r.setProperty(name, value);
+
+  set('--bg', c.background);      set('--fg', c.foreground);
+  set('--panel', c.currentLine);  set('--edge', c.separator);
+  set('--accent', c.accent);      set('--muted', c.comment);
+  set('--sel', c.selection);      set('--caret', c.caret);
+  set('--kw', c.keyword);         set('--str', c.string);
+  set('--com', c.comment);        set('--num', c.number);
+  set('--typ', c.type);           set('--fn', c.function);
+  set('--va', c.variable);        set('--op', c.operator);
+  set('--pun', c.punctuation);
+
+  // So the browser paints its own chrome — scrollbars, form controls, the
+  // overscroll gutter — to match rather than fighting the palette.
+  r.setProperty('color-scheme', t.dark ? 'dark' : 'light');
+
+  $('#nowName').textContent = t.name;
+  $('#footTheme').textContent = t.name;
+  document.querySelectorAll('.sw').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.id === t.id)));
+
+  try { localStorage.setItem(KEY, t.id); } catch (e) { /* private browsing */ }
+}
+
+// Build the rail.
+const list = $('#swatches');
+THEMES.forEach(t => {
+  const c = t.colors;
+  const li = document.createElement('li');
+  const b = document.createElement('button');
+  b.className = 'sw';
+  b.type = 'button';
+  b.dataset.id = t.id;
+  b.setAttribute('aria-pressed', 'false');
+  b.setAttribute('aria-label', t.name);
+  b.style.background = c.background;
+  b.style.borderColor = c.separator;
+  b.innerHTML =
+    `<span style="background:${c.keyword}"></span>` +
+    `<span style="background:${c.string}"></span>` +
+    `<span style="background:${c.accent}"></span>` +
+    `<span class="sw-name">${t.name}</span>`;
+  b.addEventListener('click', () => applyTheme(t));
+  li.appendChild(b);
+  list.appendChild(li);
+});
+
+// ?theme=dracula wins, so a particular look can be linked to; then whatever
+// was chosen last visit; then the one the app itself opens with.
+let start = THEMES[0];
+try {
+  const saved = localStorage.getItem(KEY);
+  if (saved) start = THEMES.find(t => t.id === saved) || start;
+} catch (e) { /* private browsing */ }
+
+const asked = new URLSearchParams(location.search).get('theme');
+if (asked) start = THEMES.find(t => t.id === asked) || start;
+
+applyTheme(start);
+
+// Fill in the real version once it's known, so the page can't claim a release
+// that doesn't exist. Quietly does nothing if the feed isn't up yet.
+fetch('appcast.xml')
+  .then(r => r.ok ? r.text() : Promise.reject())
+  .then(xml => {
+    const v = new DOMParser().parseFromString(xml, 'application/xml')
+      .querySelector('item > title')?.textContent?.trim();
+    if (v) $('#meta').textContent = `Version ${v} · Apple silicon & Intel · free`;
+  })
+  .catch(() => {});
+</script>
 </body>
 </html>
