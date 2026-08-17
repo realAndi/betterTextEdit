@@ -295,4 +295,10 @@ Every build is signed with an ed25519 key whose public half is `SUPublicEDKey` i
 | `APPLE_APP_PASSWORD` | An app-specific password from [appleid.apple.com](https://appleid.apple.com), for notarisation |
 | `SPARKLE_PRIVATE_KEY` | The ed25519 private key that signs updates |
 
+`Tools/setup_secrets.sh` sets all of them except the Sparkle key, which is generated once and never changes. Run it again whenever the Developer ID certificate is reissued — Apple's expire yearly, and a release that fails while signing is usually just that:
+
+```sh
+Tools/setup_secrets.sh ~/Desktop/DeveloperID.p12
+```
+
 `.github/workflows/build.yml` needs none of them — it compiles, checks the release tooling still runs, and signs nothing, so it works on forks and pull requests.
