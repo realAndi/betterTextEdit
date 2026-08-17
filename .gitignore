@@ -1,0 +1,25 @@
+DerivedData/
+.DS_Store
+*.xcuserstate
+xcuserdata/
+
+# Build output, archives and packaged releases — all reproducible from a tag.
+build/
+*.xcarchive
+*.dmg
+
+# Swift Package Manager's local checkout of Sparkle. Package.resolved is
+# committed instead: it pins the exact version, which is what actually needs
+# to travel with the source.
+.swiftpm/
+betterTextEdit.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/configuration/
+
+# Never. The private half of the Sparkle signing key is what proves an update
+# came from us; it belongs in the login Keychain and in GitHub Actions secrets,
+# nowhere else.
+*.p12
+sparkle_private_key*
+
+# Python bytecode from running the release tooling locally.
+__pycache__/
+*.pyc

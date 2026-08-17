@@ -1,0 +1,76 @@
+# Does it still build?
+#
+# Deliberately not a copy of the release job. This one signs nothing, notarises
+# nothing and publishes nothing — it needs no secrets, so it runs on forks and
+# pull requests too, and it can't accidentally ship anything. Its only job is to
+# fail before a broken commit gets as far as being tagged.
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    # Tag pushes are the release workflow's business; no need to compile twice.
+    tags-ignore: ["**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Show the toolchain
+        run: xcodebuild -version
+
+      # Cached separately from the build: resolving Sparkle is a network fetch
+      # that doesn't change between commits, and a flaky github.com shouldn't
+      # read as a broken build.
+      - name: Cache resolved packages
+        uses: actions/cache@v4
+        with:
+          path: build/DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('**/Package.resolved', '**/project.pbxproj') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build
+        run: |
+          # CODE_SIGNING_ALLOWED=NO because there is no certificate here and
+          # this build is never distributed — it exists to surface compile
+          # errors, and signing would only add a way for it to fail that has
+          # nothing to do with the code.
+          xcodebuild build \
+            -project betterTextEdit.xcodeproj \
+            -scheme betterTextEdit \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions
+
+      - name: Check the release tooling still runs
+        run: |
+          # The appcast generator only ever runs during a release, which is a
+          # bad moment to discover a typo in it. This exercises it against a
+          # scratch feed so a mistake surfaces on the commit that caused it.
+          python3 Tools/update_appcast.py \
+            --appcast "$RUNNER_TEMP/appcast.xml" \
+            --short-version 0.0.0 --build 0 \
+            --url https://example.invalid/x.dmg \
+            --length 1 --signature test \
+            --notes CHANGELOG.md
+          python3 -c "import xml.etree.ElementTree as ET; ET.parse('$RUNNER_TEMP/appcast.xml')"
+          bash -n Tools/sign_app.sh Tools/make_dmg.sh Tools/notarize.sh

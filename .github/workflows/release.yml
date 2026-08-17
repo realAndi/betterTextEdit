@@ -1,0 +1,342 @@
+# Cut a release: build, sign, notarise, publish, and tell Sparkle about it.
+#
+# Triggered by pushing a tag like v1.0.0. Everything downstream of that tag is
+# derived from it, so cutting a release is one command:
+#
+#     git tag v1.0.1 && git push origin v1.0.1
+#
+# The job ends with two things published: a .dmg attached to a GitHub Release
+# for people who click Download, and an updated appcast.xml on GitHub Pages,
+# which is the feed already-installed copies check. Both point at the same file,
+# so there is only ever one build of a given version in existence.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing tag to (re)build, e.g. v1.0.0"
+        required: true
+
+# Pushing to gh-pages and creating the release both write to the repository.
+permissions:
+  contents: write
+
+# Two releases building at once would race to publish the appcast, and the
+# loser's entry would vanish. They queue instead — and never cancel, since a
+# half-finished release is worse than a slow one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+
+    defaults:
+      run:
+        # Named explicitly to get `-o pipefail` with it. The default shell
+        # doesn't set it, and every xcodebuild here is piped into a formatter —
+        # without pipefail a failed build would be reported as a success.
+        shell: bash
+
+    steps:
+      # ---------------------------------------------------------------------
+      # Work out what we're building
+      # ---------------------------------------------------------------------
+
+      - name: Resolve the tag
+        id: tag
+        env:
+          # Through the environment rather than interpolated into the script:
+          # a tag name is text from outside, and text from outside pasted into
+          # a shell is how workflows get taken over.
+          RAW_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [[ ! "$RAW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: '$RAW_TAG' is not a vMAJOR.MINOR.PATCH tag" >&2
+            exit 1
+          fi
+          echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # The build number is the commit count, so the whole history is
+          # needed rather than the single commit a tag build would get.
+          fetch-depth: 0
+
+      - name: Work out the build number
+        id: build
+        run: |
+          # CFBundleVersion has to increase with every release — it's how
+          # Sparkle decides one build is newer than another. The commit count
+          # does that on its own, without a counter to remember to bump.
+          echo "number=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Show the toolchain
+        run: xcodebuild -version
+
+      # ---------------------------------------------------------------------
+      # Signing identity
+      # ---------------------------------------------------------------------
+
+      - name: Import the Developer ID certificate
+        env:
+          CERTIFICATE_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          # A throwaway keychain that exists only for this run, rather than the
+          # login keychain: nothing outlives the job, and the password is never
+          # anything a later step could reuse.
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          echo -n "$CERTIFICATE_P12" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Without this the keychain re-locks after five minutes of idling and
+          # a long notarisation wait leaves the next codesign asking for a
+          # password nobody is there to type.
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          security import "$CERT_PATH" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -f pkcs12 \
+            -k "$KEYCHAIN" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          # Lets codesign use the key without a UI prompt, which there is
+          # nobody to answer on a runner.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+          rm -f "$CERT_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+          # Read the identity's full name back out of the keychain rather than
+          # spelling it out here. codesign needs an exact match, and the name
+          # embeds a person and a team id that would otherwise be duplicated in
+          # this file and go stale the day the certificate is reissued.
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep 'Developer ID Application' \
+            | head -1 \
+            | sed -E 's/.*"(.*)".*/\1/')"
+          if [[ -z "$IDENTITY" ]]; then
+            echo "error: no Developer ID Application identity in the keychain" >&2
+            exit 1
+          fi
+          echo "Signing as: $IDENTITY"
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------------
+      # Build
+      # ---------------------------------------------------------------------
+
+      - name: Archive
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+          BUILD_NUMBER: ${{ steps.build.outputs.number }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # The version is injected here rather than committed to the project,
+          # so the git tag is the single place a release number is written and
+          # the two can't disagree.
+          #
+          # Manual signing: automatic signing wants to talk to an Apple ID and
+          # manage profiles, which a runner has no business doing. A Developer
+          # ID app with no entitlements needs no provisioning profile at all —
+          # just the certificate imported above.
+          xcodebuild archive \
+            -project betterTextEdit.xcodeproj \
+            -scheme betterTextEdit \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$RUNNER_TEMP/betterTextEdit.xcarchive" \
+            -derivedDataPath build/DerivedData \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            | xcbeautify --renderer github-actions
+
+      - name: Sign
+        run: |
+          APP="$RUNNER_TEMP/betterTextEdit.xcarchive/Products/Applications/betterTextEdit.app"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          Tools/sign_app.sh "$APP" "$SIGNING_IDENTITY"
+
+      # ---------------------------------------------------------------------
+      # Notarise, then package, then notarise again
+      # ---------------------------------------------------------------------
+      #
+      # The app is notarised and stapled before the disk image is built around
+      # it, so a copy dragged out of the image carries its own ticket and opens
+      # even offline. The image is then notarised in turn, so the download
+      # itself is trusted before it's ever mounted.
+
+      - name: Notarise the app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: Tools/notarize.sh "$APP"
+
+      - name: Build the disk image
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          DMG="$RUNNER_TEMP/betterTextEdit-$VERSION.dmg"
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+          Tools/make_dmg.sh "$APP" "$DMG" "$SIGNING_IDENTITY"
+
+      - name: Notarise the disk image
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: Tools/notarize.sh "$DMG"
+
+      - name: Check it the way a user's Mac will
+        run: |
+          # The last word on whether this opens without a warning. Better to
+          # find out here than in an issue report.
+          spctl --assess --type open --context context:primary-signature -vv "$DMG"
+
+      # ---------------------------------------------------------------------
+      # Publish
+      # ---------------------------------------------------------------------
+
+      - name: Sign the update for Sparkle
+        id: sparkle
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          # Sparkle's own tool, taken from the copy Swift Package Manager
+          # already resolved — so the signature is always made by exactly the
+          # Sparkle version linked into the app.
+          SIGN_UPDATE="$(find build/DerivedData/SourcePackages/artifacts \
+            -name sign_update -type f -perm -u+x | head -1)"
+          if [[ -z "$SIGN_UPDATE" ]]; then
+            echo "error: could not find Sparkle's sign_update" >&2
+            exit 1
+          fi
+
+          # Through stdin, not an argument: command lines are visible to every
+          # process on the machine, and this is the key that lets anyone
+          # publish an update our users would install.
+          SIGNATURE="$(printf '%s' "$SPARKLE_PRIVATE_KEY" \
+            | "$SIGN_UPDATE" --ed-key-file - -p "$DMG")"
+
+          echo "::add-mask::$SIGNATURE"
+          echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "length=$(stat -f%z "$DMG")" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          # Release notes come from CHANGELOG.md so the website, the Release
+          # page and the update dialogue all say the same thing.
+          NOTES="$RUNNER_TEMP/notes.md"
+          python3 - "$VERSION" > "$NOTES" <<'PY'
+          import sys, pathlib
+          sys.path.insert(0, "Tools")
+          from update_appcast import extract_section
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          print(extract_section(text, sys.argv[1]) or "See CHANGELOG.md for details.")
+          PY
+
+          # --clobber so re-running a failed release replaces the asset rather
+          # than refusing because a partial upload is already there.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG" --clobber
+            gh release edit "$TAG" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" "$DMG" \
+              --title "betterTextEdit $VERSION" \
+              --notes-file "$NOTES"
+          fi
+
+      - name: Publish the appcast
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          BUILD_NUMBER: ${{ steps.build.outputs.number }}
+          SIGNATURE: ${{ steps.sparkle.outputs.signature }}
+          LENGTH: ${{ steps.sparkle.outputs.length }}
+        run: |
+          mkdir -p pages
+
+          # Start from what's already published, so past releases stay in the
+          # feed. The branch is generated, so it's rebuilt rather than merged —
+          # but rebuilt from its own previous contents, not from nothing.
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch --depth 1 origin gh-pages
+            git archive FETCH_HEAD | tar -x -C pages
+            echo "Starting from the published site:"
+            ls -la pages
+          else
+            echo "No gh-pages branch yet; starting a new feed."
+          fi
+
+          MIN_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+            "$APP/Contents/Info.plist" 2>/dev/null || echo 26.0)"
+
+          python3 Tools/update_appcast.py \
+            --appcast pages/appcast.xml \
+            --short-version "$VERSION" \
+            --build "$BUILD_NUMBER" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$DMG")" \
+            --length "$LENGTH" \
+            --signature "$SIGNATURE" \
+            --min-system "$MIN_SYSTEM" \
+            --notes CHANGELOG.md
+
+          cp Tools/pages_index.html pages/index.html
+
+          cd pages
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "Publish appcast for $TAG"
+          git push -f \
+            "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" \
+            gh-pages
+
+      - name: Summarise
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          BUILD_NUMBER: ${{ steps.build.outputs.number }}
+        run: |
+          {
+            echo "## betterTextEdit $VERSION released"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`$TAG\` |"
+            echo "| Build | \`$BUILD_NUMBER\` |"
+            echo "| Download | https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG |"
+            echo "| Feed | https://realandi.github.io/betterTextEdit/appcast.xml |"
+            echo
+            echo "Existing installs will offer this update within a day."
+          } >> "$GITHUB_STEP_SUMMARY"
