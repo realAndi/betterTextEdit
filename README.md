@@ -278,6 +278,29 @@ git tag v1.0.1 && git push origin v1.0.1
 
 Release notes come from `CHANGELOG.md`. The section matching the version being tagged becomes both the GitHub Release body and the text shown inside the app's update dialogue, so notes are written once.
 
+### Releasing from your own Mac instead
+
+`Tools/release_local.sh` does the same thing without CI, running the same scripts in the same order. The Developer ID certificate and the Sparkle key are already in your login Keychain, so the only thing to arrange is notarisation — once, ever:
+
+```sh
+xcrun notarytool store-credentials betterTextEdit \
+    --apple-id <you@example.com> --team-id UP8MGDBQ7Q --password <app-specific>
+
+Tools/release_local.sh 1.0.1
+```
+
+It refuses to start unless the tree is clean, the tag doesn't already name a published release, the certificate and notarisation profile are present, and the version is well formed — all checked up front rather than discovered three minutes into a build. The tag is pushed last, after everything else has succeeded, so a failure partway through leaves no tag claiming a release that doesn't exist.
+
+The two paths can't collide: the workflow's first job checks whether the tag already has a `.dmg` attached and stands down if it does. That matters because the appcast records a signature for one specific file — a second build of the same version would produce a different one, and Sparkle would refuse the download whose signature no longer matched.
+
+### Repository protections
+
+- Only GitHub-authored actions may run, so no third-party action can be introduced into the release pipeline.
+- `GITHUB_TOKEN` defaults to read-only; the release workflow asks for `contents: write` explicitly and nothing else does.
+- `main` cannot be force-pushed or deleted.
+- `v*` tags cannot be deleted, moved, or force-updated — a moved tag would republish different code under a version users have already been offered.
+- Secret scanning with push protection is on, so a key can't be committed by accident.
+
 ### How updating works
 
 The app embeds [Sparkle](https://sparkle-project.org). On launch it starts a daily background check against the feed named by `SUFeedURL` in `Info.plist`; **Check for Updates…** in the app menu and the button in Settings ▸ General ask immediately.

@@ -12,8 +12,19 @@
 # around the now-stapled app. Notarising only the image would leave the copy
 # the user drags out without a ticket of its own.
 #
-# Credentials come from the environment, never the command line, since
-# arguments are visible to every process on the machine:
+# Credentials arrive one of two ways.
+#
+# Locally, set NOTARY_PROFILE to the name of a profile saved once with:
+#
+#     xcrun notarytool store-credentials betterTextEdit \
+#         --apple-id <you@example.com> --team-id <TEAMID> --password <app-specific>
+#
+# which keeps the password in the login Keychain so it's typed once ever
+# rather than once per release.
+#
+# On CI there's no Keychain to save it in, so the three values come from the
+# environment instead — never the command line, since arguments are visible to
+# every other process on the machine:
 #   APPLE_ID            the Apple ID that owns the Developer ID certificate
 #   APPLE_TEAM_ID       the 10-character team identifier
 #   APPLE_APP_PASSWORD  an app-specific password from appleid.apple.com
@@ -24,9 +35,20 @@ set -euo pipefail
 
 TARGET="${1:?usage: notarize.sh <app-or-dmg>}"
 
-: "${APPLE_ID:?APPLE_ID is not set}"
-: "${APPLE_TEAM_ID:?APPLE_TEAM_ID is not set}"
-: "${APPLE_APP_PASSWORD:?APPLE_APP_PASSWORD is not set}"
+# Built as an array so the password, when there is one, is passed as a single
+# argument no matter what characters Apple put in it.
+if [[ -n "${NOTARY_PROFILE-}" ]]; then
+    CREDENTIALS=(--keychain-profile "$NOTARY_PROFILE")
+else
+    : "${APPLE_ID:?set NOTARY_PROFILE, or APPLE_ID/APPLE_TEAM_ID/APPLE_APP_PASSWORD}"
+    : "${APPLE_TEAM_ID:?APPLE_TEAM_ID is not set}"
+    : "${APPLE_APP_PASSWORD:?APPLE_APP_PASSWORD is not set}"
+    CREDENTIALS=(
+        --apple-id "$APPLE_ID"
+        --team-id "$APPLE_TEAM_ID"
+        --password "$APPLE_APP_PASSWORD"
+    )
+fi
 
 if [[ ! -e "$TARGET" ]]; then
     echo "error: nothing at $TARGET" >&2
@@ -52,9 +74,7 @@ echo "Submitting $(basename "$SUBMIT") to Apple…"
 # it stream means the submission id is available to fetch the log with, which
 # is the only thing that says *why* a rejection happened.
 RESULT="$(xcrun notarytool submit "$SUBMIT" \
-    --apple-id "$APPLE_ID" \
-    --team-id "$APPLE_TEAM_ID" \
-    --password "$APPLE_APP_PASSWORD" \
+    "${CREDENTIALS[@]}" \
     --wait --output-format json)" || true
 
 echo "$RESULT"
@@ -71,10 +91,7 @@ if [[ "$STATUS" != "Accepted" ]]; then
     echo "error: notarisation came back '$STATUS'" >&2
     if [[ -n "$SUBMISSION_ID" ]]; then
         echo "--- Apple's log ---" >&2
-        xcrun notarytool log "$SUBMISSION_ID" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" >&2 || true
+        xcrun notarytool log "$SUBMISSION_ID" "${CREDENTIALS[@]}" >&2 || true
     fi
     exit 1
 fi

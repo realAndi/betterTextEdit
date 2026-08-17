@@ -34,21 +34,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: macos-26
-
-    defaults:
-      run:
-        # Named explicitly to get `-o pipefail` with it. The default shell
-        # doesn't set it, and every xcodebuild here is piped into a formatter —
-        # without pipefail a failed build would be reported as a success.
-        shell: bash
+  # A few seconds on a cheap runner to decide whether the expensive one should
+  # start at all. Kept separate so that "already released" shows up as a
+  # skipped job rather than as a green job that quietly did nothing.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      proceed: ${{ steps.published.outputs.proceed }}
 
     steps:
-      # ---------------------------------------------------------------------
-      # Work out what we're building
-      # ---------------------------------------------------------------------
-
       - name: Resolve the tag
         id: tag
         env:
@@ -64,12 +60,71 @@ jobs:
           echo "tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
           echo "version=${RAW_TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Has this already been released?
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Tools/release_local.sh publishes from a Mac and pushes the tag
+          # afterwards, which lands here. Without this check the two paths
+          # would both build the same version and race to overwrite the
+          # appcast — and the loser's signature wouldn't match the .dmg that
+          # ended up on the release, which Sparkle would refuse to install.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' 2>/dev/null | grep -q '\.dmg$'; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already published with a .dmg — nothing to do." \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.proceed == 'true'
+    runs-on: macos-26
+
+    defaults:
+      run:
+        # Named explicitly to get `-o pipefail` with it. The default shell
+        # doesn't set it, and every xcodebuild here is piped into a formatter —
+        # without pipefail a failed build would be reported as a success.
+        shell: bash
+
+    steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ needs.check.outputs.tag }}
           # The build number is the commit count, so the whole history is
           # needed rather than the single commit a tag build would get.
           fetch-depth: 0
+
+      - name: Check the signing credentials are present
+        env:
+          REQUIRED: ${{ secrets.DEVELOPER_ID_CERT_P12 != '' && secrets.DEVELOPER_ID_CERT_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.SPARKLE_PRIVATE_KEY != '' }}
+        run: |
+          # Fail here, immediately and legibly, rather than three minutes later
+          # inside `security import` with a base64 error.
+          if [[ "$REQUIRED" != "true" ]]; then
+            {
+              echo "## Signing credentials are not configured"
+              echo
+              echo "This repository can't cut a release until the secrets are set:"
+              echo
+              echo '```sh'
+              echo 'Tools/setup_secrets.sh <path-to-DeveloperID.p12>'
+              echo '```'
+              echo
+              echo "Or release from your own Mac instead, which needs none of them:"
+              echo
+              echo '```sh'
+              echo "Tools/release_local.sh ${{ needs.check.outputs.version }}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "error: signing secrets are not configured — see the job summary" >&2
+            exit 1
+          fi
 
       - name: Work out the build number
         id: build
@@ -146,7 +201,7 @@ jobs:
 
       - name: Archive
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.check.outputs.version }}
           BUILD_NUMBER: ${{ steps.build.outputs.number }}
           TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
@@ -198,7 +253,7 @@ jobs:
 
       - name: Build the disk image
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           DMG="$RUNNER_TEMP/betterTextEdit-$VERSION.dmg"
           echo "DMG=$DMG" >> "$GITHUB_ENV"
@@ -249,8 +304,8 @@ jobs:
       - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: |
           # Release notes come from CHANGELOG.md so the website, the Release
           # page and the update dialogue all say the same thing.
@@ -277,8 +332,8 @@ jobs:
       - name: Publish the appcast
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
           BUILD_NUMBER: ${{ steps.build.outputs.number }}
           SIGNATURE: ${{ steps.sparkle.outputs.signature }}
           LENGTH: ${{ steps.sparkle.outputs.length }}
@@ -324,8 +379,8 @@ jobs:
 
       - name: Summarise
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
-          VERSION: ${{ steps.tag.outputs.version }}
+          TAG: ${{ needs.check.outputs.tag }}
+          VERSION: ${{ needs.check.outputs.version }}
           BUILD_NUMBER: ${{ steps.build.outputs.number }}
         run: |
           {
