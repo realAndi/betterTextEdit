@@ -1,0 +1,42 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>betterTextEdit</title>
+    <link>https://realandi.github.io/betterTextEdit/appcast.xml</link>
+    <description>Updates for betterTextEdit.</description>
+    <language>en</language>
+    <item>
+      <title>1.0.1</title>
+      <pubDate>Wed, 19 Aug 2026 22:29:05 +0000</pubDate>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description>&lt;p&gt;The first release.&lt;/p&gt;
+&lt;h5&gt;Editing&lt;/h5&gt;
+&lt;ul&gt;
+&lt;li&gt;Syntax highlighting for the languages betterTextEdit detects by extension and by content.&lt;/li&gt;
+&lt;li&gt;Rich text alongside plain text — bold, italic, alignment, fonts and colours, with a formatting bar that appears only when it applies.&lt;/li&gt;
+&lt;li&gt;Markdown, HTML and SVG preview, side by side with the source or on its own.&lt;/li&gt;
+&lt;li&gt;Find within a document, line numbers, soft wrapping and adjustable line spacing.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h5&gt;Files&lt;/h5&gt;
+&lt;ul&gt;
+&lt;li&gt;Tabs, with ⌃Tab to cycle and ⌘1–⌘9 to jump.&lt;/li&gt;
+&lt;li&gt;A file browser for a folder you point it at.&lt;/li&gt;
+&lt;li&gt;Opens Word documents, RTF, OpenDocument text, web archives, PDFs and images.&lt;/li&gt;
+&lt;li&gt;Extracts text and images out of PDFs; exports to PDF; converts rich text and PDFs to Markdown; exports SVG as PNG.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h5&gt;Appearance&lt;/h5&gt;
+&lt;ul&gt;
+&lt;li&gt;Built-in light and dark themes, plus import of VS Code themes.&lt;/li&gt;
+&lt;li&gt;Three window surfaces: solid, glass and clear.&lt;/li&gt;
+&lt;li&gt;Per-file-type presets, so a &lt;code&gt;.md&lt;/code&gt; file can open in a different theme than a &lt;code&gt;.swift&lt;/code&gt; one.&lt;/li&gt;
+&lt;/ul&gt;
+&lt;h5&gt;Updates&lt;/h5&gt;
+&lt;ul&gt;
+&lt;li&gt;Checks for new versions automatically and installs them on request.&lt;/li&gt;
+&lt;/ul&gt;</description>
+      <enclosure url="https://github.com/realAndi/betterTextEdit/releases/download/v1.0.1/betterTextEdit-1.0.1.dmg" length="3119056" type="application/octet-stream" sparkle:edSignature="wpRm9m/v/fYJI82Z8sgKovpdT3+JGh5G1mbiKrqTzATb45qcS/T12GXZOR2e6yikeBXBe+e159JP51XMpKVMAg==" />
+    </item>
+  </channel>
+</rss>
