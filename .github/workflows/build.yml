@@ -83,3 +83,17 @@ jobs:
           # looks exactly like a correct one, so it's checked rather than
           # trusted.
           Tools/sync_themes.py --check
+
+      - name: Check no expansion is glued to a multibyte character
+        run: |
+          # macOS ships bash 3.2, which folds the bytes of an adjacent
+          # multibyte character into the variable name — so `$VERSION…` looks
+          # up a variable that doesn't exist and `set -u` kills the script.
+          # It survives `bash -n` because it's an expansion error, not a syntax
+          # one, and the prose in these scripts is full of ellipses and dashes.
+          if grep -nP '\$\{?[A-Za-z_][A-Za-z0-9_]*(?![A-Za-z0-9_}])[^\x00-\x7F]' Tools/*.sh; then
+            echo "error: brace those expansions — \${VAR}… not \$VAR…" >&2
+            exit 1
+          fi
+          echo "no glued expansions"
+

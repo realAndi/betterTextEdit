@@ -102,7 +102,7 @@ ARCHIVE="$WORK/betterTextEdit.xcarchive"
 APP="$ARCHIVE/Products/Applications/betterTextEdit.app"
 DMG="$WORK/betterTextEdit-$VERSION.dmg"
 
-say "Building $VERSION…"
+say "Building ${VERSION}…"
 xcodebuild archive \
     -project betterTextEdit.xcodeproj \
     -scheme betterTextEdit \
