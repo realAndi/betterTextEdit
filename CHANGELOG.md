@@ -8,7 +8,7 @@ notes are written.
 Headings and bullets carry across; keep entries short and in plain language,
 since they're read by someone deciding whether to click Install.
 
-## 1.0.0
+## 1.0.1
 
 The first release.
 
