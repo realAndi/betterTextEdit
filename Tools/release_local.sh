@@ -205,9 +205,16 @@ cp Tools/pages_index.html "$PAGES/index.html"
 )
 
 say "Pushing the tag…"
-# Already on the remote when the tag was pushed ahead of the release, which is
-# not an error — the release it names now exists.
-git push origin "$TAG" 2>&1 | grep -v 'Everything up-to-date' || true
+# `gh release create` creates the tag on the remote itself when it isn't there
+# yet, so by this point it usually already exists — which is a success, not the
+# failure a bare `git push` would print. Only push when the remote genuinely
+# lacks it, and fetch it back either way so the local ref matches.
+if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+    echo "  already on the remote (created with the release)"
+    git fetch -q --tags origin
+else
+    git push origin "$TAG"
+fi
 
 say "Released $VERSION"
 echo "  download  https://github.com/$REPO/releases/tag/$TAG"
