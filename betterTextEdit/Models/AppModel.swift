@@ -152,7 +152,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func add(_ document: EditorDocument) {
+    func add(_ document: EditorDocument) {
         isLaunching = false
         documents.append(document)
         selectedID = document.id
@@ -239,7 +239,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func message(for error: Error) -> String {
+    func message(for error: Error) -> String {
         guard let recovery = (error as? LocalizedError)?.recoverySuggestion else {
             return error.localizedDescription
         }
@@ -247,23 +247,6 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Converting
-
-    /// Lifts a PDF's text into an editable formatted document, keeping the
-    /// fonts and sizes PDFKit reports. The result can be saved as `.docx`.
-    func extractTextFromPDF() {
-        guard let source = selectedDocument, let pdf = source.pdf else { return }
-
-        let attributed = DocumentImporter.extractText(from: pdf)
-        guard attributed.length > 0 else {
-            showError(
-                title: "There’s no text to extract.",
-                message: "This PDF has no selectable text — its pages may be scanned images."
-            )
-            return
-        }
-
-        add(EditorDocument.formatted(attributed, name: "\(source.baseName) Text"))
-    }
 
     /// Flattens a formatted document to Markdown in a new tab, leaving the
     /// original untouched.
@@ -334,6 +317,8 @@ final class AppModel: ObservableObject {
 
     func saveSelected() {
         guard let document = selectedDocument else { return }
+        // A PDF only ever goes out as a PDF — see `AppModel+PDF`.
+        if document.kind == .pdf { return savePDF(document) }
         guard let url = document.url else {
             saveAs(document)
             return
@@ -343,6 +328,7 @@ final class AppModel: ObservableObject {
 
     func saveSelectedAs() {
         guard let document = selectedDocument else { return }
+        if document.kind == .pdf { return savePDFAs(document) }
         saveAs(document)
     }
 
@@ -357,9 +343,23 @@ final class AppModel: ObservableObject {
                 panel.message = "macOS couldn’t read the pictures in \(document.displayName), so they "
                     + "aren’t in this document and won’t be in the file you save. "
                     + "The original is left alone so it keeps them."
-            } else if document.needsSaveAs, let format = document.importedFormat {
-                panel.message = "macOS can read \(format.displayName)s but can’t write them. "
-                    + "Saving creates a Word (.docx) copy — the original isn’t changed."
+            } else if document.needsSaveAs, let source = document.sourceURL {
+                switch source.pathExtension.lowercased() {
+                case "dotx", "dotm":
+                    panel.message = "This is a Word template. Saving creates a new Word document from it — "
+                        + "the template isn’t changed."
+                case "docm":
+                    panel.message = "Macros can’t be saved, so this creates a Word (.docx) copy without them. "
+                        + "The original keeps its macros."
+                case "doc":
+                    panel.message = "Saving creates a Word (.docx) copy, which keeps more of the formatting than "
+                        + "the older format can. The original isn’t changed."
+                default:
+                    if let format = document.importedFormat {
+                        panel.message = "macOS can read \(format.displayName)s but can’t write them. "
+                            + "Saving creates a Word (.docx) copy — the original isn’t changed."
+                    }
+                }
             }
         }
 
@@ -394,6 +394,7 @@ final class AppModel: ObservableObject {
         return switch document.sourceURL?.pathExtension.lowercased() {
         case "rtf": .richText
         case "rtfd": .richTextBundle
+        case "odt", "fodt": .openDocument
         case "html", "htm": .webPage
         default: .word
         }
@@ -413,8 +414,9 @@ final class AppModel: ObservableObject {
         return document.baseName + "." + document.language.fileExtension
     }
 
-    private func write(_ document: EditorDocument, to url: URL, format: SaveFormat = .automatic) {
+    private func write(_ document: EditorDocument, to url: URL, format requested: SaveFormat = .automatic) {
         guard document.kind == .plain || document.kind == .rich else { return }
+        let format = resolvedFormat(requested, for: document, url: url)
 
         // What actually goes on disk: the characters, or a laid-out document.
         let attributed: NSAttributedString? = if format.needsAttributedText {
@@ -432,6 +434,15 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // Writing over the Word file this came from is the one save that can
+        // destroy something the user never saw go missing: comments, tracked
+        // changes, and the like were never read in, so they can't be written
+        // back. A copy elsewhere leaves the original holding them.
+        if document.kind == .rich, !document.unsupportedFeatures.isEmpty, !document.acceptsFeatureLoss,
+           url.standardizedFileURL == document.sourceURL?.standardizedFileURL {
+            guard confirmFeatureLoss(document) else { return }
+        }
+
         do {
             switch (format, attributed) {
             case let (.pdf, .some(text)):
@@ -441,11 +452,15 @@ final class AppModel: ObservableObject {
                     text,
                     to: url,
                     layout: document.pageLayout,
-                    documentAttributes: document.documentAttributes
+                    documentAttributes: document.documentAttributes,
+                    source: document.sourceURL
                 )
             case (_, .none):
-                // Plain formats: write the characters, whatever the extension.
-                try characters(of: document, as: format).write(to: url, atomically: true, encoding: .utf8)
+                // Plain formats: write the characters, whatever the extension,
+                // in the encoding and line endings the file came with.
+                let text = characters(of: document, as: format)
+                guard let fileFormat = textFormat(for: document, writing: text) else { return }
+                try SafeFileWriter.write(try fileFormat.encode(text), to: url)
             }
 
             // Saving a copy in another format leaves the document pointing at
@@ -456,6 +471,82 @@ final class AppModel: ObservableObject {
             objectWillChange.send()
         } catch {
             showError(title: "The file couldn’t be saved.", message: message(for: error))
+        }
+    }
+
+    /// What "automatic" means for this document and this file.
+    ///
+    /// For text it means the characters, whatever the extension. For a
+    /// formatted document it has to mean the format the file's name says —
+    /// ⌘S has no popup to consult, and treating it as "just the characters"
+    /// would write a Word document's bare text over the Word document.
+    private func resolvedFormat(_ format: SaveFormat, for document: EditorDocument, url: URL) -> SaveFormat {
+        guard format == .automatic, document.kind == .rich else { return format }
+        switch url.pathExtension.lowercased() {
+        case "docx": return .word
+        case "doc": return .word97
+        case "odt": return .openDocument
+        case "rtf": return .richText
+        case "rtfd": return .richTextBundle
+        case "html", "htm": return .webPage
+        case "pdf": return .pdf
+        default:
+            if let text = TextFormatCatalog.format(forExtension: url.pathExtension) { return .text(text) }
+            return .word
+        }
+    }
+
+    /// The encoding and line endings to write `text` with: the document's own
+    /// for text, plain UTF-8 for a formatted document flattened to text.
+    ///
+    /// A file read as Windows 1252 can't hold an emoji typed into it. Rather
+    /// than fail the save or quietly write question marks, offer UTF-8, which
+    /// holds everything. `nil` means the user cancelled.
+    private func textFormat(for document: EditorDocument, writing text: String) -> TextFileFormat? {
+        guard document.kind == .plain else { return .standard }
+        let format = document.textFormat
+        guard !format.canEncode(text) else { return format }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(document.displayName)” has characters that can’t be saved as \(format.encoding.name)."
+        alert.informativeText = "UTF-8 can hold every character, and almost every app reads it. "
+            + "Saving in \(format.encoding.name) isn’t possible without losing some of the text."
+        alert.addButton(withTitle: "Save as UTF-8")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        document.textFormat.encoding = .utf8
+        document.textFormat.byteOrderMark = false
+        return document.textFormat
+    }
+
+    /// Reads a text file again in an encoding the user picked — for a file
+    /// whose encoding was guessed wrong, which shows up as accented letters
+    /// turned into pairs of odd symbols.
+    func reopen(_ document: EditorDocument, encoding: TextFileFormat.Encoding) {
+        guard document.kind == .plain, let url = document.sourceURL ?? document.url else { return }
+        if document.isModified {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Reopening “\(document.displayName)” will discard your changes."
+            alert.informativeText = "The file is read again from disk as \(encoding.name)."
+            alert.addButton(withTitle: "Reopen")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
+
+        Task {
+            do {
+                let payload = try await DocumentImporter.loadPlainText(url, encoding: encoding)
+                document.apply(payload, from: url)
+                objectWillChange.send()
+            } catch {
+                showError(
+                    title: "“\(document.displayName)” isn’t valid \(encoding.name).",
+                    message: "Its bytes don’t make sense in that encoding. Try another one."
+                )
+            }
         }
     }
 
@@ -516,6 +607,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Asks before a save over the original Word file drops what betterTextEdit
+    /// couldn't read. Returns `true` when the caller should go ahead.
+    private func confirmFeatureLoss(_ document: EditorDocument) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Saving over “\(document.displayName)” will remove its \(list(document.unsupportedFeatures))."
+        alert.informativeText = "betterTextEdit shows everything else in this document, but it can’t keep "
+            + "\(list(document.unsupportedFeatures)). Saving a copy leaves the original exactly as it was."
+        alert.addButton(withTitle: "Save a Copy…")
+        alert.addButton(withTitle: "Save Anyway")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            saveAs(document)
+            return false
+        case .alertSecondButtonReturn:
+            document.acceptsFeatureLoss = true
+            return true
+        default:
+            return false
+        }
+    }
+
     private func saveAsRichText(_ document: EditorDocument) {
         let panel = NSSavePanel()
         panel.title = "Save as Rich Text"
@@ -536,6 +651,57 @@ final class AppModel: ObservableObject {
         case 1: items[0]
         case 2: "\(items[0]) or \(items[1])"
         default: items.dropLast().joined(separator: ", ") + ", or " + (items.last ?? "")
+        }
+    }
+
+    // MARK: - Printing
+
+    /// Prints whatever's on screen, the way it would print from the app that
+    /// made it: a formatted document at its own paper size and margins, a PDF
+    /// as its pages, a picture scaled to the page, and text in the editor's
+    /// typeface. The panel comes down as a sheet on the window.
+    func printSelected() {
+        guard let document = selectedDocument else { return }
+
+        let operation: NSPrintOperation?
+        switch document.kind {
+        case .rich:
+            let layout = document.pageLayout
+            operation = PDFExporter.operation(
+                for: document.attributedText,
+                layout: layout,
+                printInfo: PDFExporter.printInfo(for: layout)
+            )
+        case .plain:
+            let monospaced = document.language != .markdown && document.language != .plainText
+            let text = PDFExporter.attributedText(from: document.text, monospaced: monospaced)
+            let layout = PageLayout()
+            operation = PDFExporter.operation(for: text, layout: layout, printInfo: PDFExporter.printInfo(for: layout))
+        case .pdf:
+            operation = document.pdf?.printOperation(for: NSPrintInfo.shared, scalingMode: .pageScaleToFit, autoRotate: true)
+        case .image:
+            guard let image = document.image?.frames.first?.image else { return }
+            // A copy, so fitting this picture to the page doesn't become the
+            // setting for everything printed afterwards.
+            let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
+            info.horizontalPagination = .fit
+            info.verticalPagination = .fit
+            info.isHorizontallyCentered = true
+            info.isVerticallyCentered = true
+            let view = NSImageView(frame: NSRect(origin: .zero, size: image.size))
+            view.image = image
+            view.imageScaling = .scaleProportionallyUpOrDown
+            operation = NSPrintOperation(view: view, printInfo: info)
+        }
+
+        guard let operation else { return }
+        operation.jobTitle = document.displayName
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        if let window = NSApp.keyWindow {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
         }
     }
 
@@ -593,7 +759,7 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    private func showError(title: String, message: String) {
+    func showError(title: String, message: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title

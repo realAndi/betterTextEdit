@@ -51,6 +51,11 @@ final class RichTextController: ObservableObject {
         let traits = NSFontManager.shared.traits(of: font)
 
         fontFamily = font.familyName ?? font.fontName
+        // A Word document can name a typeface this Mac doesn't have; it's
+        // drawn in a stand-in, but the name to show is the one it asked for.
+        if let original = attributes[.wordFontName] as? String, fontFamily == WordML.standIn(for: original) {
+            fontFamily = original
+        }
         fontSize = font.pointSize
         isBold = traits.contains(.boldFontMask)
         isItalic = traits.contains(.italicFontMask)
@@ -217,7 +222,9 @@ struct RichTextEditor: NSViewRepresentable {
 
         // Build the TextKit 1 stack by hand so the view attaches to the
         // document's existing storage rather than making its own.
-        let layoutManager = NSLayoutManager()
+        // Word's capitals, hidden text, tab leaders, and boxed runs are drawn
+        // by the layout manager — see `WordLayoutManager`.
+        let layoutManager = WordLayoutManager()
         let container = NSTextContainer(
             size: NSSize(width: layout.textWidth, height: .greatestFiniteMagnitude)
         )
@@ -368,6 +375,23 @@ struct RichTextEditor: NSViewRepresentable {
 
         func textViewDidChangeTypingAttributes(_: Notification) {
             document.formatting.refresh()
+        }
+
+        /// Typing picks up the attributes of the character before the caret —
+        /// including the labels the Word reader puts on a list marker, a
+        /// field's result, or a footnote. Those describe the original run, not
+        /// what's typed next to it: new text after a marker isn't part of the
+        /// marker, and text typed after a table of contents isn't part of it.
+        func textView(
+            _: NSTextView,
+            shouldChangeTypingAttributes _: [String: Any],
+            toAttributes newTypingAttributes: [NSAttributedString.Key: Any]
+        ) -> [NSAttributedString.Key: Any] {
+            var attributes = newTypingAttributes
+            for key in NSAttributedString.Key.wordStructureLabels {
+                attributes[key] = nil
+            }
+            return attributes
         }
 
         private func reportCursor() {

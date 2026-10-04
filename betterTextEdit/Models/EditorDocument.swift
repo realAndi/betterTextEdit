@@ -62,6 +62,13 @@ final class EditorDocument: ObservableObject, Identifiable {
     /// Formatting state for the toolbar and the Format menu.
     let formatting = RichTextController()
 
+    /// The PDF's view, its undo history, and everything done to its pages and
+    /// markup — plus text-recognition progress, for PDFs and images alike.
+    let pdfEditing = PDFEditingController()
+
+    /// True once a PDF's pages, markup, or form fields have been changed.
+    @Published private(set) var pdfIsEdited = false
+
     /// Set once the user has been told what a lossy save format will drop and
     /// has chosen to keep going.
     var suppressesFormatWarning = false
@@ -78,6 +85,14 @@ final class EditorDocument: ObservableObject, Identifiable {
         return displayedImageCount > 0 ? "Images won’t be saved" : "Images not shown"
     }
 
+    /// Things in the Word file this came from that never reached the editor —
+    /// comments, tracked changes, text boxes — and so can't be saved back.
+    private(set) var unsupportedFeatures: [String] = []
+
+    /// Set once the user has agreed that saving over the original may drop
+    /// `unsupportedFeatures`, so they're asked once rather than on every ⌘S.
+    var acceptsFeatureLoss = false
+
     private(set) var pdf: PDFDocument?
     private(set) var image: ImageDocument?
     private(set) var pageLayout = PageLayout()
@@ -93,6 +108,15 @@ final class EditorDocument: ObservableObject, Identifiable {
     private(set) var importedFormat: DocumentImporter.Format?
     private var languageOverride: FileLanguage?
     private(set) var persistedText: String
+
+    /// How the text is laid out on disk — encoding, byte-order mark, line
+    /// endings. Changing it is an edit: the characters are the same, but the
+    /// next save writes different bytes.
+    @Published var textFormat = TextFileFormat.standard {
+        didSet { if textFormat != oldValue { textFormatIsEdited = true } }
+    }
+
+    @Published private(set) var textFormatIsEdited = false
     private(set) var untitledName: String
 
     /// A language the user picked by hand, which beats both the file name and
@@ -217,9 +241,10 @@ final class EditorDocument: ObservableObject, Identifiable {
 
     var isModified: Bool {
         switch kind {
-        case .plain: text != persistedText
+        case .plain: text != persistedText || textFormatIsEdited
         case .rich: richIsEdited
-        case .pdf, .image: false
+        case .pdf: pdfIsEdited
+        case .image: false
         }
     }
 
@@ -264,7 +289,7 @@ final class EditorDocument: ObservableObject, Identifiable {
     }
 
     /// True when the file this came from can't be written back — either because
-    /// macOS has no writer for it, or because it's a PDF.
+    /// macOS has no writer for it, or because it sits somewhere read-only.
     var needsSaveAs: Bool {
         url == nil
     }
@@ -286,6 +311,8 @@ final class EditorDocument: ObservableObject, Identifiable {
             kind = .plain
             self.text = text
             persistedText = text
+            textFormat = payload.textFormat
+            textFormatIsEdited = false
             languageOverride = nil
             url = source
             // A `.conf`, a `.zshrc`, or anything else the name doesn't explain
@@ -301,6 +328,7 @@ final class EditorDocument: ObservableObject, Identifiable {
             richIsEdited = false
             hasUnreadableImages = payload.hasUnreadableImages
             displayedImageCount = payload.displayedImageCount
+            unsupportedFeatures = payload.unsupportedFeatures
             // Formats macOS can write are saved straight back where they came
             // from; the read-only ones start unsaved so Save can't clobber them.
             // A file whose images macOS couldn't read is treated as read-only
@@ -311,7 +339,11 @@ final class EditorDocument: ObservableObject, Identifiable {
             kind = .pdf
             languageOverride = .pdf
             pdf = document
-            url = nil
+            pdfIsEdited = false
+            pdfEditing.attach(document) { [weak self] in self?.markPDFEdited() }
+            // Annotations, form fields, and page changes are written straight
+            // back — unless the file can't be, in which case Save asks where.
+            url = FileManager.default.isWritableFile(atPath: source.path) ? source : nil
 
         case let .image(document):
             kind = .image
@@ -330,11 +362,26 @@ final class EditorDocument: ObservableObject, Identifiable {
         richIsEdited = true
     }
 
+    func markPDFEdited() {
+        guard !pdfIsEdited else { return }
+        pdfIsEdited = true
+    }
+
+    /// A PDF has no format to change on the way out, so saving it anywhere —
+    /// back in place, or somewhere new with Save As — makes that file the one
+    /// this tab is.
+    func markPDFSaved(at url: URL) {
+        self.url = url
+        pdfIsEdited = false
+        objectWillChange.send()
+    }
+
     func markSaved(at url: URL) {
         self.url = url
         sourceURL = sourceURL ?? url
         persistedText = text
         richIsEdited = false
+        textFormatIsEdited = false
         if kind == .plain {
             // Once the text has a real home, the file on disk defines the language.
             languageOverride = nil

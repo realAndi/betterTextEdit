@@ -168,6 +168,14 @@ struct CodeEditor: NSViewRepresentable {
             name: .editorShowFind,
             object: nil
         )
+
+        // A file just opened, or a tab just switched to, is ready to type
+        // into — the way the formatted editor already is — rather than waiting
+        // for a click first. Deferred a beat, since the view has no window yet.
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window, window.firstResponder !== textView else { return }
+            window.makeFirstResponder(textView)
+        }
         return container
     }
 

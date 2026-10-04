@@ -404,7 +404,7 @@ private struct DocumentEditor: View {
 
         case .pdf:
             if let pdf = document.pdf {
-                PDFViewer(document: pdf, zoom: $pdfZoom)
+                PDFViewer(document: pdf, editor: document.pdfEditing, zoom: $pdfZoom)
             } else {
                 ContentUnavailableView("Empty PDF", systemImage: "doc")
             }
@@ -412,6 +412,7 @@ private struct DocumentEditor: View {
         case .image:
             if let image = document.image {
                 ImageViewer(document: image, zoom: $imageZoom)
+                    .overlay(alignment: .top) { RecognitionBanner(editor: document.pdfEditing) }
             } else {
                 ContentUnavailableView("Empty Image", systemImage: "photo")
             }
@@ -513,18 +514,26 @@ private struct DocumentEditor: View {
                 Text(document.kind == .pdf ? "Read only" : "Saves as a Word copy")
             }
 
+            if document.kind == .rich, !document.unsupportedFeatures.isEmpty {
+                Text("·")
+                Label("Some content can’t be edited", systemImage: "exclamationmark.triangle")
+                    .help("This Word document has \(document.unsupportedFeatures.joined(separator: ", ")), which "
+                        + "betterTextEdit can’t keep. You’ll be asked before saving over the original.")
+            }
+
             Spacer()
 
             if document.kind == .pdf {
-                if let pdf = document.pdf {
-                    Text("\(pdf.pageCount) \(pdf.pageCount == 1 ? "page" : "pages")")
-                        .monospacedDigit()
-                }
+                PDFPageStatus(editor: document.pdfEditing)
             } else if document.kind == .image {
                 if let image = document.image, image.isAnimated {
                     Text("\(image.frames.count) frames").monospacedDigit()
                 }
             } else {
+                if document.kind == .plain {
+                    textFormatMenu
+                    Text("·")
+                }
                 Text("Line \(document.cursorLine), Column \(document.cursorColumn)")
                     .monospacedDigit()
             }
@@ -543,6 +552,45 @@ private struct DocumentEditor: View {
                 .fill(themes.current.edge)
                 .frame(height: 1)
         }
+    }
+
+    /// The file's encoding and line endings, and a way to change either — the
+    /// way BBEdit and VS Code put them in the status bar. Picking one changes
+    /// how the next save writes the file; reopening reads it again from disk,
+    /// for a file whose encoding was guessed wrong.
+    private var textFormatMenu: some View {
+        Menu {
+            Section("Save With Encoding") {
+                ForEach(TextFileFormat.Encoding.allCases) { encoding in
+                    item(named: encoding.name, selected: document.textFormat.encoding == encoding) {
+                        document.textFormat.encoding = encoding
+                        if !encoding.isUnicode { document.textFormat.byteOrderMark = false }
+                    }
+                }
+            }
+            if document.textFormat.encoding == .utf8 {
+                Toggle("Byte Order Mark", isOn: $document.textFormat.byteOrderMark)
+            }
+            Section("Line Endings") {
+                ForEach(TextFileFormat.LineEnding.allCases) { ending in
+                    item(named: ending.name, selected: document.textFormat.lineEnding == ending) {
+                        document.textFormat.lineEnding = ending
+                    }
+                }
+            }
+            if document.sourceURL != nil {
+                Menu("Reopen With Encoding") {
+                    ForEach(TextFileFormat.Encoding.allCases) { encoding in
+                        Button(encoding.name) { AppModel.shared.reopen(document, encoding: encoding) }
+                    }
+                }
+            }
+        } label: {
+            Text("\(document.textFormat.label) · \(document.textFormat.lineEnding.label)")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("How this file is encoded on disk, and its line endings")
     }
 
     /// What the editor thinks this text is, and a way to say otherwise.

@@ -5,6 +5,17 @@ struct BetterTextEditApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel.shared
 
+    init() {
+        // No window restoration. Every window shows the one shared `AppModel`,
+        // whose tabs aren't saved between launches, so a restored window can
+        // only be a duplicate of the same tabs — and each launch after a crash
+        // or a forced quit brought back one more copy. SwiftUI's
+        // `restorationBehavior(.disabled)` doesn't stop AppKit restoring state
+        // it saved earlier, and the app delegate's restoration hook is never
+        // consulted for SwiftUI's windows; this is read before either runs.
+        UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true])
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -16,10 +27,21 @@ struct BetterTextEditApp: App {
                 .onOpenURL { url in
                     model.open(url)
                 }
+                // A file opened from Finder while the app is running is an
+                // "external event", and unless a window says it can take one,
+                // SwiftUI makes a new window for it — another view of the same
+                // tabs, one more for every file opened. This window takes them
+                // all, so the file arrives as a tab instead.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .defaultSize(width: 1180, height: 760)
+        // One model drives every window, and its tabs aren't saved between
+        // launches — so a restored window could only ever be a second view of
+        // the same tabs. Relaunching after a crash used to stack up copies.
+        .restorationBehavior(.disabled)
         .commands {
             EditorCommands(model: model)
+            PDFCommands(model: model)
         }
 
         // No `Settings` scene. Settings opens as a tab in the window instead —
@@ -63,10 +85,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   let model = self?.model
             else { return event }
 
-            if event.modifierFlags.contains(.shift) {
-                model.selectPreviousDocument()
-            } else {
-                model.selectNextDocument()
+            // Local monitors are called on the main thread, as part of event
+            // dispatch — the compiler just can't see that from the signature.
+            let backwards = event.modifierFlags.contains(.shift)
+            MainActor.assumeIsolated {
+                if backwards {
+                    model.selectPreviousDocument()
+                } else {
+                    model.selectNextDocument()
+                }
             }
             return nil
         }
@@ -160,9 +187,13 @@ struct EditorCommands: Commands {
         model.selectedDocument?.isSVG == true
     }
 
+    private var isImage: Bool {
+        model.selectedDocument?.kind == .image
+    }
+
     private var canSave: Bool {
         guard let kind = model.selectedDocument?.kind else { return false }
-        return kind == .plain || kind == .rich
+        return kind == .plain || kind == .rich || kind == .pdf
     }
 
     private var formatting: RichTextController? {
@@ -215,6 +246,12 @@ struct EditorCommands: Commands {
             Button("Save As…") { model.saveSelectedAs() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!canSave)
+        }
+
+        CommandGroup(replacing: .printItem) {
+            Button("Print…") { model.printSelected() }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(model.selectedDocument == nil || model.selectedDocument?.isLoading == true)
         }
 
         CommandGroup(after: .textEditing) {
@@ -350,6 +387,8 @@ struct EditorCommands: Commands {
                 .disabled(!isPDF)
             Button("Convert to Markdown") { model.convertToMarkdown() }
                 .disabled(!isRich && !isPDF)
+            Button("Recognise Text in Image") { model.recognizeTextInImage() }
+                .disabled(!isImage)
 
             Divider()
 

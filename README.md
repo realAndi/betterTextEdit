@@ -1,10 +1,11 @@
 # betterTextEdit
 
-A native macOS editor with four faces: a code editor for text and source files, a word processor for Word, Rich Text, and OpenDocument files, a PDF reader, and an image viewer. Built with SwiftUI, AppKit, TextKit, and PDFKit, with no cross-platform shell and no third-party dependencies. The editor itself is TextKit throughout; WebKit appears in exactly one place — rendering the HTML preview.
+A native macOS editor with four faces: a code editor for text and source files, a word processor for Word, Rich Text, and OpenDocument files, a PDF viewer and editor, and an image viewer. Built with SwiftUI, AppKit, TextKit, and PDFKit, with no cross-platform shell and no third-party dependencies. The editor itself is TextKit throughout; WebKit appears in exactly one place — rendering the HTML preview.
 
 ## Features
 
 - Fast, memory-mapped loading for local text files
+- **Keeps a text file's encoding and line endings** — UTF-8 with or without a BOM, UTF-16, Windows 1252, Latin 1, Mac Roman; LF, CRLF, or CR — and shows them in the status bar, where either can be changed
 - Syntax highlighting for Swift, JavaScript, TypeScript, Python, HTML, CSS, C/C++, Rust, Go, Java, Shell, YAML, TOML, XML, SQL, JSON, and Markdown
 - **Themes** — 21 of them, from Tokyo Midnight to Cherry Sakura, plus a System theme that follows macOS's Light/Dark switch
 - **Imports VS Code and Cursor themes** — browse the ones already installed on your Mac, or open a `.json`, `.vsix`, or `.tmTheme` file
@@ -13,11 +14,12 @@ A native macOS editor with four faces: a code editor for text and source files, 
 - Opens to a blank document, like TextEdit or Notepad
 - **Views images** — PNG, JPEG, TIFF, and the awkward ones too: WebP, HEIC, AVIF, and camera RAW; animated GIF, APNG, and animated WebP play, and can be stepped frame by frame. Zoom is continuous: pinch, the buttons under the picture, or double-click to switch between fitting the window and actual size
 - **Saves as several formats** — a File Format popup in the Save panel, including PDF export
-- **Opens Word, Rich Text, and OpenDocument files with their formatting intact** — typeface, size, colour, bold and italic, paragraph spacing, alignment, lists, and tables
+- **Reads and writes Word documents itself**, rather than through macOS's lossy converter — numbered lists stay numbered, links keep their destinations, tables keep their merged cells, highlighting, pictures, headings, footnotes, fields, headers and footers all survive an edit-and-save round trip. Verified by opening the results in Microsoft Word
+- **Opens Rich Text and OpenDocument files with their formatting intact**, and saves them back in place
 - **Edits that formatting** — a format bar and a Format menu for typeface, size, style, colour, and alignment, plus the standard macOS Font and Colour panels
-- **Saves back into Word format**, so an edited document opens in Word, Pages, or Google Docs
-- Shows the pictures in Word documents, which macOS's own reader skips, at the size Word intended
-- Opens PDFs as PDFs, at full fidelity, with text *and images* extracted into an editable document on request
+- **Edits PDFs** — highlight, underline, and strike through text, add notes, fill in forms, rotate, reorder, delete, insert, and export pages, find text, and open password-protected files; ⌘S writes it all back into the PDF
+- **Reads scanned PDFs and pictures** with on-device text recognition, and extracts text *and images* from any PDF into an editable document
+- **Prints** anything it opens — ⌘P
 - Converts any formatted document to Markdown
 - JSON formatting and validation
 - Line numbers, find bar, word wrap, text sizing, word count, cursor position
@@ -27,43 +29,67 @@ A native macOS editor with four faces: a code editor for text and source files, 
 
 | Format | Extensions | Opens as | Read via | Save writes |
 | --- | --- | --- | --- | --- |
-| Text and source code | `.txt`, `.md`, `.json`, `.swift`, `.py`, `.css`, `.yaml`, … | Code editor | Memory-mapped, UTF-8 / UTF-16 / Latin-1 | The same file |
-| Word | `.docx` | Word processor | `NSAttributedString` | The same file |
+| Text and source code | `.txt`, `.md`, `.json`, `.swift`, `.py`, `.css`, `.yaml`, … | Code editor | Memory-mapped; encoding and line endings detected | The same file, in the same encoding |
+| Word | `.docx` | Word processor | `DocxReader` (AppKit as a fallback) | The same file, via `DocxWriter` |
+| Word templates, macro-enabled Word | `.dotx`, `.dotm`, `.docm` | Word processor | `DocxReader` | A `.docx` copy |
 | Rich Text | `.rtf`, `.rtfd` | Word processor | `NSAttributedString` | The same file |
-| Word 97–2004 | `.doc` | Word processor | `NSAttributedString` | A `.docx` copy |
-| OpenDocument | `.odt` | Word processor | `NSAttributedString` | A `.docx` copy |
+| OpenDocument | `.odt` | Word processor | `NSAttributedString` | The same file |
+| Word 97–2004 | `.doc` | Word processor | `NSAttributedString` | A `.docx` copy (`.doc` on request) |
 | Web archive | `.webarchive` | Word processor | `NSAttributedString` | A `.docx` copy |
-| PDF | `.pdf` | PDF viewer | PDFKit | — (extract text first) |
+| PDF | `.pdf` | PDF viewer and editor | PDFKit | The same file |
 | Images | `.png`, `.jpg`, `.heic`, `.webp`, `.avif`, `.gif`, `.tiff`, `.dng`, `.cr2`, `.nef`, `.arw`, … | Image viewer | ImageIO | — (read only) |
 
 ### Formatted documents
 
-macOS ships readers *and writers* for these container formats, reachable through `NSAttributedString`. No ZIP or XML parsing is needed and nothing has to be vendored in.
+The text view edits the very `NSTextStorage` that came out of the file, so every font, colour, size, indent, tab stop, and paragraph spacing is the same object going back out. The page is laid out at the document's own paper size and margins, so lines break where Word breaks them, and the paper size — width *and* height, so A4 stays A4 — is written back on save.
 
-Because nothing is converted on the way in, the fidelity comes for free: the text view edits the very `NSTextStorage` that came out of the file, so every font, colour, size, indent, tab stop, and paragraph spacing is the same object going back out. The page is laid out at the document's own paper size and margins — read from its document attributes — so lines break where Word breaks them, and those attributes are written back on save.
+Rich Text, RTFD, OpenDocument, and the older formats go through macOS's own readers and writers, reachable through `NSAttributedString`. Word documents don't, because macOS's Office Open XML support loses too much — see below.
+
+### Word documents
+
+macOS can read and write `.docx` on its own, and both directions are lossy. Measured on macOS 26, its **reader** turns every list into a bulleted one whatever Word numbered it, drops hyperlinks, pictures, highlighting, and heading levels, and shifts colours. Its **writer** flattens tables into paragraphs, drops link destinations and pictures, types list markers into the text as literal characters, and loses highlighting — and spells some elements in ways Word's schema doesn't recognise.
+
+So betterTextEdit reads and writes the package itself. `.docx` is a ZIP of XML parts; `ZipArchive` and `ZipWriter` handle the container with `libcompression`, whose `COMPRESSION_ZLIB` is exactly the raw DEFLATE stream ZIP stores.
+
+**Reading** (`DocxReader`) resolves formatting the way Word does — document defaults, the paragraph style and everything it's based on, the character style, then direct formatting, with theme fonts and colours looked up — and numbers lists by running Word's own counters over `numbering.xml`, so `1.`, `a.`, `ii.`, and `Article 4` come out as Word shows them, including lists that restart or carry on. Pictures land exactly where their drawing sits, at Word's display size, with their original bytes. Tables keep merged cells, borders, shading, and padding. Fields show their results; tracked changes show accepted; footnotes and endnotes are gathered after the text. Spacing that Word works out between neighbouring paragraphs — contextual spacing, HTML-style automatic spacing — is applied the way Word applies it, so a list's items sit together.
+
+**Writing** (`DocxWriter`) turns it all back into the same structures: real numbering definitions, hyperlinks, `w:tbl` tables, inline pictures, headings Word's navigation pane recognises, highlight versus shading, and the page's size, orientation, and margins. Fields are written back around their results, so a table of contents is still a table of contents; footnotes go back into `footnotes.xml` behind their reference marks. Headers and footers never reach the text view — there's nowhere to put them — so they're copied across from the original package byte for byte.
+
+**Horizontal lines and borders.** Word draws a line across the page in three different ways, and all three are read: a paragraph border (what typing `---` and Return makes), Word's own horizontal line (*Insert ▸ Horizontal Line*, and what HTML's `<hr>` becomes — newer Word versions rewrite it as a thin rectangle named "Horizontal Line"), and a drawn line shape. Paragraph borders and shading become an `NSTextBlock` round the paragraph — shared by consecutive paragraphs with the same borders, as Word groups them, and given an explicit width, because a text block without one collapses to a single letter per line. The other two draw as a rule spanning the line.
+
+**Word formatting the text system doesn't have** is carried as attributes and drawn by `WordLayoutManager`: tab leaders (the dots in a table of contents), small and all capitals (drawn as capitals, saved as typed), boxed text, and hidden text, which stays in the document — and is saved — but takes no space on screen. Character scaling and outline map to AppKit's own expansion and stroke. Symbol characters from Wingdings and Webdings draw in those fonts, which macOS ships; Symbol's are mapped to the Unicode characters they stand for.
+
+**What can't be edited is kept, not dropped.** Equations, text boxes, shapes, charts, SmartArt, and embedded objects arrive as objects in the text — an equation in its linear form, a text box with its text, others as a labelled frame of the right size, or their preview picture — holding the exact XML they came from and every package part it refers to. Saving writes them back byte for byte, with their relationships renumbered for the new package, so a chart stays a live chart. Byte for byte matters: Word keeps a checksum of a VML shape beside the drawing it really uses, and a shape rewritten even in attribute order is drawn from its plain fallback instead.
+
+**Structure survives too:** bookmarks (so internal links and cross-references still land), content controls round text and round whole paragraphs, named paragraph and character styles — written with their original definitions, so Word's style gallery and table of contents still know them — the document theme, custom document properties, custom XML, and the section's columns, page borders, and line numbering.
+
+Office fonts that macOS doesn't ship — Calibri, Cambria, Aptos — are shown in a close stand-in, and written back under their real names, so a document doesn't change typeface by being opened here. The format bar shows the name the document asked for.
+
+The reader leaves AppKit-native structures behind it — `NSTextList`, `NSTextTable`, `NSTextAttachment` — so the text view edits everything natively, and labels anything Word-specific with attributes of its own, which the writer reads. Those labels are kept off text typed next to a labelled run, so new text after a list marker or a footnote never becomes part of it.
+
+Both halves were checked against Microsoft Word itself: documents written in Word, read here, written back, and opened in Word again have the same paragraphs, tables, links, pictures, footnotes, fields, list numbers, and appearance.
 
 ### Known limits
 
-These are macOS's, not the app's, and they are worth knowing before you rely on a round trip.
+These are worth knowing before you rely on a round trip.
 
-- **Images can be read but never written into `.docx`.** See [Pictures](#pictures) below. macOS's writer emits no media parts at all, so a document with pictures opens *unsaved* — Save writes a copy, and the original keeps its images. The status bar says so.
-- **Writing `.docx` flattens tables and links.** Apple's Office Open XML writer keeps fonts, sizes, colours, styles, and spacing, but turns tables into plain paragraphs, drops link destinations, and writes lists as literal bullet characters. betterTextEdit checks for this before saving and offers Rich Text instead, which loses nothing and which Word opens natively. Rich Text and RTFD round-trip perfectly.
-- **Reading `.docx` numbering is lossy in the other direction.** Apple's reader reports every list as a bulleted one regardless of `w:numFmt`, and often drops hyperlink destinations. RTF, RTFD, and OpenDocument keep both.
-- **`.doc`, `.odt`, and `.webarchive` are read-only formats on macOS.** They open unsaved so Save can't overwrite them, and save as `.docx`.
-- **Pages, Keynote, Numbers, EPUB, and macro-enabled Word** have no public reader. Opening one names the format and suggests an export rather than showing a wall of binary.
-- **PDFs are not editable in place.** Nothing round-trips a PDF; *Convert ▸ Extract Text from PDF* lifts the text out, keeping the fonts and sizes PDFKit reports, into a document that can be edited and saved as `.docx`.
-- **Scanned PDFs yield nothing** — there is no OCR here.
+- **Some parts of a Word document can't be kept:** comments, tracked changes (they're shown accepted), and layouts with more than one section — a document is saved as one section, with the last section's settings. The status bar says when a document has any, and saving *over the original* asks first and offers a copy instead — a copy leaves the original holding them.
+- **Equations, text boxes, shapes, charts, SmartArt, and embedded objects** are kept exactly and saved back as they were, but can't be edited here — they move and delete as a whole, like a picture. Floating objects sit in the line rather than where Word floats them.
+- **Columns, page borders, line numbers, and drop caps** are saved back but not shown — the editor is one column. A double or dotted border is drawn as a single line, though it's saved as it was.
+- **Pictures linked to a file outside the document**, rather than embedded in it, aren't shown.
+- **Macro-enabled documents and templates** open as documents and save as a `.docx` copy: macros can't be written, and writing a template's contents over it would turn it into a document.
+- **macOS's Rich Text writer can't hold pictures** — save as RTFD or Word to keep them. Its OpenDocument writer drops pictures too, and its Word 97–2004 writer drops lists, links, and pictures. betterTextEdit says what a format will lose before a save simplifies a document.
+- **Pages, Keynote, Numbers, and EPUB** have no public reader. Opening one names the format and suggests an export rather than showing a wall of binary.
+- **PDF text isn't edited in place** — PDFs can be marked up, filled in, and rearranged, but rewording one means extracting its text into a document. Text recognised from a scan goes into a new document rather than being embedded in the PDF as a searchable layer.
 - `.html` opens as source to edit, not as a formatted document.
 
 ### Pictures
 
 Neither of the two frameworks involved hands over the pictures in a document, so betterTextEdit goes and gets them.
 
-**Word.** AppKit's Office Open XML reader ignores `<w:drawing>` completely: a package containing `word/media/photo.png` comes back as text with no attachment at all. Since `.docx` is a ZIP and macOS has no ZIP API, `ZipArchive` reads the container's central directory and inflates entries with `libcompression` — whose `COMPRESSION_ZLIB` is exactly the raw DEFLATE stream ZIP stores.
+**Word.** `DocxReader` places each picture exactly where its drawing sits in the text. Each drawing's `<wp:extent>` gives Word's intended display size in EMUs, so a 3000-pixel photograph scaled to three inches in Word appears three inches wide here too. The attachment carries the file's original bytes rather than a re-encode, so a JPEG stays a JPEG — and `DocxWriter` writes those same bytes back into `word/media/`, converting only formats Word can't read, such as HEIC, to PNG.
 
-Getting the images back in the right place is the other half. `word/document.xml` is walked in order, accumulating the text inside `<w:t>` runs plus a newline per `<w:p>`; each `<a:blip>` records how many characters preceded it, and that offset lines up with AppKit's output because both are built from the same runs in the same order. Each drawing's `<wp:extent>` gives Word's intended display size in EMUs, so a 3000-pixel photograph scaled to three inches in Word appears three inches wide here too. The attachment carries the file's original bytes rather than a re-encode, so a JPEG stays a JPEG.
-
-Lists and tables can nudge the offsets — AppKit synthesises bullet and cell text of its own — so images land near, not always exactly at, their original position. Offsets are clamped, never out of range.
+When a package is too damaged for `DocxReader` and AppKit's reader takes over, that reader ignores `<w:drawing>` completely, so `DocxImages` puts the pictures back by counting characters through `word/document.xml`. Lists and tables can nudge those offsets, so in that fallback images land near, not always exactly at, their original position.
 
 **PDF.** Images are XObjects in the page's resource dictionary. `CGPDFStreamCopyData` returns either ready-made JPEG/JPEG 2000 bytes, which macOS decodes directly, or raw samples, which are rebuilt into a `CGImage` — the component count is derived from the byte count rather than by parsing the colour-space object, which covers the grey and RGB bitmaps that make up nearly all raw PDF images and declines the rest instead of guessing. Anything under 24 pixels is skipped as a rule or spacer. The walk recurses into form XObjects, because pictures are frequently not at the top of a page — anything drawn through a reusable form, including macOS's own PDF printing, nests them a level or more down, and a scan that only looks at the page's own XObjects comes back empty. Positioning images against the text would mean tracking the graphics state through the whole content stream, so each page's images follow that page's text in draw order.
 
@@ -85,11 +111,37 @@ Images are read-only. The status bar carries the dimensions, format, colour mode
 
 ### Saving as another format
 
-The Save panel carries a **File Format** popup. A plain document can go out as itself, Rich Text, Word, HTML, or PDF; a formatted one as Word, Rich Text, RTFD, HTML, plain text, or PDF.
+The Save panel carries a **File Format** popup. A plain document can go out as itself, Rich Text, Word, OpenDocument, or PDF; a formatted one as Word, Rich Text, RTFD, OpenDocument, HTML, PDF, Word 97–2004, plain text, or Markdown.
+
+Every save builds the new file beside the original and swaps it in with `replaceItemAt`, so a failed write never leaves half a file, and the original's Finder tags, colour label, permissions, and creation date carry over — an atomic write on its own replaces the file with a new one that has none of them.
 
 PDF export goes through `NSPrintOperation` rather than a Core Text framesetter — the print machinery already paginates an `NSTextView`, and unlike a framesetter it draws text attachments, so a document's pictures make it into the PDF.
 
 Exporting is not the same as saving: writing a PDF or a flattened copy leaves the tab pointing at the original document, so the next ⌘S still goes where you'd expect.
+
+### Text encodings and line endings
+
+A text file is read in whatever encoding it's in and written back the same way: the status bar shows it — `UTF-8 · LF`, `Windows 1252 · CRLF` — and is a menu for changing the encoding, the byte-order mark, or the line endings the next save uses, or for reopening the file in a different encoding when a guess was wrong.
+
+A byte-order mark is believed. Without one, UTF-16 is recognised by its pattern of zero bytes, then UTF-8 is tried — it's strict enough that anything that decodes as UTF-8 almost certainly is — and only then Windows 1252, which decodes anything and so is the last resort for data that already looks like text. Windows 1252 rather than Latin 1, because the two only differ at 0x80–0x9F, where Latin 1 has invisible control codes and Windows 1252 has the curly quotes, dashes, and euro sign such files are actually full of.
+
+The editor only ever sees `\n`; a file's line endings are put back on the way out, using whichever the file mostly used. If text gains a character its encoding can't hold — an emoji typed into a Windows 1252 file — saving offers UTF-8 rather than failing or quietly writing question marks.
+
+### Editing PDFs
+
+PDFs open ready to work on. Highlight, underline, or strike through the selected text, or leave a note — click its icon later to read, change, or delete it. Rotate, reorder, delete, or export pages, or insert pages from other PDFs or pictures. Fill in forms in place. ⌘S writes it all back into the same file, safely: the new version goes to a scratch file first and only replaces the original once it's complete. Every change can be undone, and each PDF keeps its own undo history.
+
+The sidebar shows every page. Click to go to one, ⌘/⇧-click to pick several for the page commands, drag to reorder, or right-click for Rotate, Export, and Delete. If the PDF has a table of contents, it's a click away. The thumbnails are drawn by `PDFPage` rather than `PDFThumbnailView`, because on macOS 26 the latter ignores page rotation.
+
+**Password-protected PDFs** ask for their password instead of refusing to open. Once unlocked, a saved copy stays encrypted with the same password.
+
+**Scanned PDFs and pictures.** *Extract Text from PDF* reads pages that have no text layer using Vision's on-device document recognition, which keeps paragraphs in reading order and turns a title into a heading. It shows progress and can be cancelled. *Convert ▸ Recognise Text in Image* does the same for pictures.
+
+**Find in PDF.** ⌘F jumps to the find field below the page. It shows every match at once with a count; Return and ⇧Return step through them, and Esc clears.
+
+### Printing
+
+⌘P prints whatever is on screen the way the app that made it would: a formatted document at its own paper size and margins, a PDF as its pages, a picture scaled to fit, and text in a monospaced face. The print panel comes down as a sheet on the window.
 
 ### HTML preview
 
@@ -115,6 +167,7 @@ Open files are tabs, with a `+` at the end of the strip for a new one. They can 
 | ⌘O / ⇧⌘O | Open file · open folder |
 | ⌘W | Close tab — the window goes only once the last tab has |
 | ⌘S / ⇧⌘S | Save · Save As |
+| ⌘P | Print |
 | ⌘1…⌘9 | Jump to a tab |
 | ⇧⌘] / ⇧⌘[ | Next · previous tab |
 | ⌃⇥ / ⌃⇧⇥ | Cycle tabs |
@@ -128,6 +181,8 @@ Open files are tabs, with a `+` at the end of the strip for a new one. They can 
 | ⌘B / ⌘I / ⌘U | Bold · italic · underline (formatted documents) |
 | ⌘{ / ⌘\| / ⌘} | Align left · centre · right |
 | ⇧⌘E | Extract text from a PDF |
+| ⌃⌘H / ⌃⌘U / ⌃⌘N | Highlight · underline · add a note (PDFs) |
+| ⌘L / ⌘R | Rotate the page left · right (PDFs) |
 | ⌥⇧⌘F | Format JSON |
 
 ⌘1…⌘9 belong to the tabs, so the view modes sit on ⌥⌘. Tab cycling is a key monitor rather than a menu item, since a menu shortcut can't carry ⇥ — it watches for that exact chord only, leaving ordinary tabbing in the editor alone.

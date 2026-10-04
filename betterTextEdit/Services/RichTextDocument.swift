@@ -12,6 +12,10 @@ import UniformTypeIdentifiers
 /// whole look of a page — match what Word shows.
 struct PageLayout: Equatable {
     var paperWidth: CGFloat = 612 // US Letter at 72 dpi
+    /// Kept alongside the width rather than assumed: an A4 document is 842
+    /// points tall, and writing it back as 792 would quietly turn it into a
+    /// sheet that exists in neither standard.
+    var paperHeight: CGFloat = 792
     var leftMargin: CGFloat = 72
     var rightMargin: CGFloat = 72
     var topMargin: CGFloat = 72
@@ -30,6 +34,7 @@ struct PageLayout: Equatable {
         if let paper = attributes[.paperSize] as? NSValue {
             let size = paper.sizeValue
             if size.width > 100 { paperWidth = size.width }
+            if size.height > 100 { paperHeight = size.height }
         }
         if let value = attributes[.leftMargin] as? NSNumber { leftMargin = CGFloat(value.doubleValue) }
         if let value = attributes[.rightMargin] as? NSNumber { rightMargin = CGFloat(value.doubleValue) }
@@ -48,11 +53,12 @@ struct PageLayout: Equatable {
 
 /// Writes formatted text back out in a format other apps can open.
 ///
-/// AppKit can *write* Office Open XML, so a document opened from `.docx`,
-/// edited here, and saved goes back to disk as a real `.docx` — Word, Pages, and
-/// Google Docs all open the result. The same call handles `.rtf`, `.rtfd`, and
-/// `.html`. Formats macOS can only read (`.doc`, `.odt`, `.webarchive`) are
-/// saved as `.docx` instead, which is why they open unsaved.
+/// Word documents go through `DocxWriter`, which writes the package itself and
+/// keeps what AppKit's own Office Open XML writer drops — tables, links, real
+/// lists, highlighting, pictures — and carries an original's headers and
+/// footers across. Everything else goes through AppKit: Rich Text and RTFD
+/// round-trip perfectly, HTML and OpenDocument well, and Word 97–2004 just
+/// well enough to be worth offering as an export.
 enum RichTextWriter {
     enum WriteError: LocalizedError {
         case unsupported(String)
@@ -65,17 +71,18 @@ enum RichTextWriter {
         }
 
         var recoverySuggestion: String? {
-            "Save as .docx, .rtf, .html, or .txt instead."
+            "Save as .docx, .rtf, .odt, .html, or .txt instead."
         }
     }
 
-    /// Extensions we can write formatting into, best first.
-    static let writableExtensions = ["docx", "rtf", "rtfd", "html", "txt"]
-
-    static var savePanelContentTypes: [UTType] {
-        let docx = UTType("org.openxmlformats.wordprocessingml.document")
-        return [docx, .rtf, .rtfd, .html, .plainText].compactMap { $0 }
-    }
+    /// Extensions a document opened from can be saved straight back into.
+    ///
+    /// `.doc` is writable but deliberately not here: macOS's Word 97 writer
+    /// loses lists, links, and pictures, so a `.doc` saves as a `.docx` copy
+    /// unless that's asked for by name. Templates and macro-enabled documents
+    /// save as copies too — writing a template's contents over it would turn it
+    /// into a document, and the macros can't be written at all.
+    static let writableExtensions = ["docx", "rtf", "rtfd", "odt", "html", "txt"]
 
     static func canWrite(_ url: URL) -> Bool {
         writableExtensions.contains(url.pathExtension.lowercased())
@@ -85,33 +92,25 @@ enum RichTextWriter {
 
     /// Names the things that won't survive writing `attributed` to `url`.
     ///
-    /// macOS's Office Open XML writer keeps fonts, sizes, colours, styles, and
-    /// paragraph spacing, but it flattens tables into plain paragraphs, drops
-    /// link destinations, and turns real lists into literal bullet characters.
-    /// Rich Text keeps all of it — and Word opens Rich Text — so it's worth
-    /// telling the user before a save quietly simplifies their document.
+    /// Word, Rich Text with images, and RTFD keep everything the editor can
+    /// hold. The formats that go through AppKit's writers each drop something,
+    /// and it's worth saying what before a save quietly simplifies a document.
     static func losses(writing attributed: NSAttributedString, to url: URL) -> [String] {
         switch documentType(for: url) {
         case .plain:
             return ["all formatting"]
-        case .officeOpenXML:
-            var losses: [String] = []
-            if contains(attributed, where: { style in
-                style.textBlocks.contains { $0 is NSTextTableBlock }
-            }) {
-                losses.append("tables")
-            }
-            if hasLink(attributed) {
-                losses.append("links")
-            }
-            if hasAttachment(attributed) {
-                losses.append("images")
-            }
-            return losses
         case .rtf:
             // RTF the format can carry images; AppKit's RTF *writer* can't.
             // RTFD — the bundle form — can, which is what to steer towards.
             return hasAttachment(attributed) ? ["images"] : []
+        case .openDocument:
+            return hasAttachment(attributed) ? ["images"] : []
+        case .docFormat:
+            var losses: [String] = []
+            if contains(attributed, where: { !$0.textLists.isEmpty }) { losses.append("numbered lists") }
+            if hasLink(attributed) { losses.append("links") }
+            if hasAttachment(attributed) { losses.append("images") }
+            return losses
         default:
             return []
         }
@@ -161,6 +160,8 @@ enum RichTextWriter {
     private static func documentType(for url: URL) -> NSAttributedString.DocumentType? {
         switch url.pathExtension.lowercased() {
         case "docx": .officeOpenXML
+        case "doc": .docFormat
+        case "odt": .openDocument
         case "rtf": .rtf
         case "rtfd": .rtfd
         case "html", "htm": .html
@@ -171,20 +172,35 @@ enum RichTextWriter {
 
     /// Writes `attributed` to `url`, carrying the page geometry through so the
     /// saved file keeps the paper size and margins it was opened with.
+    ///
+    /// `source` is the file the document was opened from; when that's a Word
+    /// document and this is a Word save, its headers and footers come along.
     static func write(
         _ attributed: NSAttributedString,
         to url: URL,
         layout: PageLayout,
-        documentAttributes: [NSAttributedString.DocumentAttributeKey: Any] = [:]
+        documentAttributes: [NSAttributedString.DocumentAttributeKey: Any] = [:],
+        source: URL? = nil
     ) throws {
         guard let type = documentType(for: url) else {
             throw WriteError.unsupported(url.pathExtension.lowercased())
         }
 
+        if type == .officeOpenXML {
+            try DocxWriter.write(
+                attributed,
+                to: url,
+                layout: layout,
+                documentAttributes: documentAttributes,
+                carryingPartsFrom: source
+            )
+            return
+        }
+
         let range = NSRange(location: 0, length: attributed.length)
         var attributes = documentAttributes
         attributes[.documentType] = type
-        attributes[.paperSize] = NSValue(size: NSSize(width: layout.paperWidth, height: 792))
+        attributes[.paperSize] = NSValue(size: NSSize(width: layout.paperWidth, height: layout.paperHeight))
         attributes[.leftMargin] = NSNumber(value: Double(layout.leftMargin))
         attributes[.rightMargin] = NSNumber(value: Double(layout.rightMargin))
         attributes[.topMargin] = NSNumber(value: Double(layout.topMargin))
@@ -192,11 +208,11 @@ enum RichTextWriter {
 
         if type == .rtfd {
             let wrapper = try attributed.fileWrapper(from: range, documentAttributes: attributes)
-            try wrapper.write(to: url, options: .atomic, originalContentsURL: nil)
+            try SafeFileWriter.write(to: url) { try wrapper.write(to: $0, options: [], originalContentsURL: nil) }
             return
         }
 
         let data = try attributed.data(from: range, documentAttributes: attributes)
-        try data.write(to: url, options: .atomic)
+        try SafeFileWriter.write(data, to: url)
     }
 }

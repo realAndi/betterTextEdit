@@ -11,11 +11,12 @@ import UniformTypeIdentifiers
 /// 1. **Plain text and source code** — memory-mapped and decoded to a `String`,
 ///    edited as code, saved back in place.
 /// 2. **Word processor documents** (`.docx`, `.doc`, `.rtf`, `.rtfd`, `.odt`,
-///    `.webarchive`) — decoded by AppKit's own readers into an
-///    `NSAttributedString`, *keeping* their fonts, sizes, colours, paragraph
-///    spacing, alignment, lists, and tables. No third-party ZIP or XML code is
-///    involved. They are edited as formatted text and — for the formats macOS
-///    can also write — saved back in the same format.
+///    `.webarchive`) — decoded into an `NSAttributedString`, *keeping* their
+///    fonts, sizes, colours, paragraph spacing, alignment, lists, and tables.
+///    Word's own formats go through `DocxReader`, which reads the package
+///    itself; the rest go through AppKit's readers. They are edited as
+///    formatted text and — for the formats that can be written — saved back in
+///    the same format.
 /// 3. **PDF** — handed to PDFKit and displayed as a real PDF, so the page looks
 ///    exactly as it was authored. Its text can be lifted out into an editable
 ///    formatted document on request.
@@ -90,6 +91,12 @@ enum DocumentImporter {
         var hasUnreadableImages = false
         /// How many of those images betterTextEdit recovered for display.
         var displayedImageCount = 0
+        /// Parts of a Word document that never reached the text — comments,
+        /// tracked changes, text boxes — so saving over the original would lose
+        /// them.
+        var unsupportedFeatures: [String] = []
+        /// The encoding and line endings of a text file, to write it back with.
+        var textFormat = TextFileFormat.standard
     }
 
     // MARK: - Errors
@@ -107,7 +114,7 @@ enum DocumentImporter {
             case .notText:
                 "This file isn’t text."
             case .lockedPDF:
-                "This PDF is password protected."
+                "This PDF is password protected, and wasn’t unlocked."
             case let .noTextFound(name):
                 "This \(name) has no text betterTextEdit can extract."
             }
@@ -120,7 +127,7 @@ enum DocumentImporter {
             case .notText:
                 "betterTextEdit opens text, Markdown, source code, Word, Rich Text, OpenDocument, and PDF files."
             case .lockedPDF:
-                "Remove the password in Preview, then open it again."
+                "Open it again and enter its password when asked."
             case .noTextFound:
                 "It may contain only images or scanned pages."
             }
@@ -135,12 +142,13 @@ enum DocumentImporter {
         "key": "Keynote",
         "numbers": "Numbers",
         "epub": "EPUB",
-        "docm": "macro-enabled Word",
     ]
 
     static func format(for url: URL) -> Format {
         switch url.pathExtension.lowercased() {
-        case "docx": .rich(.docx)
+        // Templates and macro-enabled documents are the same package with a
+        // different label on the main part.
+        case "docx", "dotx", "docm", "dotm": .rich(.docx)
         case "doc": .rich(.doc)
         case "rtf": .rich(.rtf)
         case "rtfd": .rich(.rtfd)
@@ -156,6 +164,9 @@ enum DocumentImporter {
     static var openableContentTypes: [UTType] {
         let named = [
             "org.openxmlformats.wordprocessingml.document",
+            "org.openxmlformats.wordprocessingml.template",
+            "org.openxmlformats.wordprocessingml.document.macroenabled",
+            "org.openxmlformats.wordprocessingml.template.macroenabled",
             "com.microsoft.word.doc",
             "org.oasis-open.opendocument.text",
         ].compactMap(UTType.init(_:))
@@ -184,31 +195,36 @@ enum DocumentImporter {
         }
     }
 
-    private static func loadPlainText(_ url: URL) async throws -> Payload {
-        let text = try await Task.detached(priority: .userInitiated) {
+    /// Reads text, working out its encoding and line endings so it can be
+    /// written back the same way — see `TextFileFormat`. `encoding` forces a
+    /// particular encoding, for reopening a file that was guessed wrong.
+    static func loadPlainText(_ url: URL, encoding: TextFileFormat.Encoding? = nil) async throws -> Payload {
+        let (text, textFormat) = try await Task.detached(priority: .userInitiated) {
             try accessing(url) {
                 let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
-                if let utf16 = String(data: data, encoding: .utf16) { return utf16 }
-                // ISO Latin-1 decodes *any* byte sequence, so it would happily
-                // turn a JPEG into mojibake. Only fall back to it once the data
-                // actually looks like text.
-                guard looksLikeText(data), let latin1 = String(data: data, encoding: .isoLatin1) else {
+                do {
+                    return try TextFileFormat.decode(data, as: encoding)
+                } catch {
                     throw ImportError.notText
                 }
-                return latin1
             }
         }.value
 
-        return Payload(
+        var payload = Payload(
             content: .plain(text),
             language: FileLanguage.detect(from: url.pathExtension),
             format: .plainText
         )
+        payload.textFormat = textFormat
+        return payload
     }
 
     @MainActor
     private static func loadRichText(_ url: URL, kind: RichKind) throws -> Payload {
+        if kind == .docx, let payload = loadWordDocument(url) {
+            return payload
+        }
+
         var documentAttributes: NSDictionary?
         let attributed = try accessing(url) { () -> NSAttributedString in
             do {
@@ -248,6 +264,31 @@ enum DocumentImporter {
             documentAttributes: attributes,
             hasUnreadableImages: restored > 0 || hasSkippedImages(at: url, kind: kind),
             displayedImageCount: restored
+        )
+    }
+
+    /// Reads a Word document with `DocxReader`. `nil` sends the file to
+    /// AppKit's reader instead — a `.docx` that's really RTF or Word 2003 XML,
+    /// or a package too damaged to walk — which is a second opinion worth having
+    /// before telling anyone their document can't be opened.
+    @MainActor
+    private static func loadWordDocument(_ url: URL) -> Payload? {
+        let result: DocxReader.Result
+        do {
+            result = try accessing(url) { try DocxReader.read(url) }
+        } catch {
+            return nil
+        }
+        guard result.text.length > 0 else { return nil }
+
+        return Payload(
+            content: .rich(result.text),
+            language: .richText,
+            format: .rich(.docx),
+            layout: PageLayout(documentAttributes: result.documentAttributes),
+            documentAttributes: result.documentAttributes,
+            displayedImageCount: result.imageCount,
+            unsupportedFeatures: result.unsupported
         )
     }
 
@@ -311,7 +352,11 @@ enum DocumentImporter {
     private static func loadPDF(_ url: URL) throws -> Payload {
         try accessing(url) {
             guard let document = PDFDocument(url: url) else { throw ImportError.notText }
-            guard !document.isLocked else { throw ImportError.lockedPDF }
+            // Ask for the password rather than refuse. Once unlocked, the
+            // document stays encrypted with that password when it's saved.
+            if document.isLocked, !PDFPasswordPrompt.unlock(document, name: url.lastPathComponent) {
+                throw ImportError.lockedPDF
+            }
             guard document.pageCount > 0 else { throw ImportError.noTextFound("PDF") }
             return Payload(content: .pdf(document), language: .pdf, format: .pdf)
         }
@@ -333,14 +378,25 @@ enum DocumentImporter {
     /// Images can't be positioned against the text without tracking the graphics
     /// state through the whole content stream, so each page's images follow that
     /// page's text, in the order the page draws them.
+    ///
+    /// `recognized` supplies text for pages that have none of their own — what
+    /// `TextRecognizer` read off a scan, keyed by page index. A recognised page
+    /// brings no images along: its only image *is* the page, and that's the text
+    /// now sitting in the document.
     @MainActor
-    static func extractText(from document: PDFDocument, maxWidth: CGFloat = 468) -> NSAttributedString {
+    static func extractText(
+        from document: PDFDocument,
+        maxWidth: CGFloat = 468,
+        recognized: [Int: NSAttributedString] = [:]
+    ) -> NSAttributedString {
         let result = NSMutableAttributedString()
 
         for index in 0 ..< document.pageCount {
             guard let page = document.page(at: index) else { continue }
-            let pageText = page.attributedString ?? page.string.map(NSAttributedString.init(string:))
-            let images = PDFImageExtractor.images(on: page)
+            let pageText = recognized[index]
+                ?? page.attributedString
+                ?? page.string.map(NSAttributedString.init(string:))
+            let images = recognized[index] == nil ? PDFImageExtractor.images(on: page) : []
             guard (pageText?.length ?? 0) > 0 || !images.isEmpty else { continue }
 
             if result.length > 0 {
@@ -374,19 +430,5 @@ enum DocumentImporter {
         let granted = url.startAccessingSecurityScopedResource()
         defer { if granted { url.stopAccessingSecurityScopedResource() } }
         return try body()
-    }
-
-    /// A cheap binary sniff: NUL bytes, or a lot of control characters, mean
-    /// this is not something anyone wants to see in a text editor.
-    private static func looksLikeText(_ data: Data) -> Bool {
-        let sample = data.prefix(8192)
-        guard !sample.isEmpty else { return true }
-
-        var controls = 0
-        for byte in sample {
-            if byte == 0 { return false }
-            if byte < 0x09 || (byte > 0x0D && byte < 0x20) { controls += 1 }
-        }
-        return Double(controls) / Double(sample.count) < 0.05
     }
 }

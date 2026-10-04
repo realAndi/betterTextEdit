@@ -105,6 +105,9 @@ enum SaveFormat: Hashable {
     case richText
     case richTextBundle
     case word
+    /// Word's binary format, for whoever still needs one.
+    case word97
+    case openDocument
     /// A laid-out web page, not source — formatting survives.
     case webPage
     case pdf
@@ -116,6 +119,8 @@ enum SaveFormat: Hashable {
         case .richText: "Rich Text (.rtf)"
         case .richTextBundle: "Rich Text with Images (.rtfd)"
         case .word: "Word Document (.docx)"
+        case .word97: "Word 97–2004 Document (.doc)"
+        case .openDocument: "OpenDocument Text (.odt)"
         case .webPage: "Web Page (.html)"
         case .pdf: "PDF (.pdf)"
         }
@@ -129,6 +134,8 @@ enum SaveFormat: Hashable {
         case .richText: "rtf"
         case .richTextBundle: "rtfd"
         case .word: "docx"
+        case .word97: "doc"
+        case .openDocument: "odt"
         case .webPage: "html"
         case .pdf: "pdf"
         }
@@ -141,6 +148,8 @@ enum SaveFormat: Hashable {
         case .richText: .rtf
         case .richTextBundle: .rtfd
         case .word: UTType("org.openxmlformats.wordprocessingml.document")
+        case .word97: UTType("com.microsoft.word.doc")
+        case .openDocument: UTType("org.oasis-open.opendocument.text")
         case .webPage: .html
         case .pdf: .pdf
         }
@@ -149,7 +158,7 @@ enum SaveFormat: Hashable {
     /// True when the text has to be laid out as formatted text on the way out.
     var needsAttributedText: Bool {
         switch self {
-        case .richText, .richTextBundle, .word, .webPage, .pdf: true
+        case .richText, .richTextBundle, .word, .word97, .openDocument, .webPage, .pdf: true
         case .automatic, .text: false
         }
     }
@@ -179,11 +188,12 @@ enum SaveFormat: Hashable {
                 + TextFormatCatalog.groups.flatMap { group in
                     [Item.section(group.title)] + group.formats.map { Item.format(.text($0)) }
                 }
-                + [.section("Documents"), .format(.word), .format(.richText), .format(.pdf)]
+                + [.section("Documents"), .format(.word), .format(.richText), .format(.openDocument), .format(.pdf)]
 
         case .rich:
             // Formatted first: these are the ones that keep the document intact.
-            [.format(.word), .format(.richText), .format(.richTextBundle), .format(.webPage), .format(.pdf)]
+            [.format(.word), .format(.richText), .format(.richTextBundle), .format(.openDocument),
+             .format(.webPage), .format(.pdf), .format(.word97)]
                 + [
                     .section("Text"),
                     .format(.text(TextFormatCatalog.plainText)),

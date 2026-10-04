@@ -188,7 +188,7 @@ struct ContentView: View {
 
     private var canSave: Bool {
         guard let kind = model.selectedDocument?.kind else { return false }
-        return kind == .plain || kind == .rich
+        return kind == .plain || kind == .rich || kind == .pdf
     }
 
     /// The file Share hands over: the one on disk that Save writes to. `nil` —
