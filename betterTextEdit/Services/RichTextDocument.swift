@@ -20,6 +20,13 @@ struct PageLayout: Equatable {
     var rightMargin: CGFloat = 72
     var topMargin: CGFloat = 72
     var bottomMargin: CGFloat = 72
+    /// Lay lines out the way Word does rather than the way AppKit does — set
+    /// for Word documents. Word measures a line from the font itself rather than
+    /// rounding it to a whole point, puts the space a line gains or loses where
+    /// AppKit doesn't, and takes the larger of two paragraphs' spacing rather
+    /// than adding them; over a page those differences add up to lines. See
+    /// `WordLayoutManager`.
+    var usesWordMetrics = false
 
     /// The width text actually flows in.
     var textWidth: CGFloat {
@@ -45,6 +52,10 @@ struct PageLayout: Equatable {
         if leftMargin + rightMargin > paperWidth - 100 {
             leftMargin = 72
             rightMargin = 72
+        }
+
+        if let type = attributes[.documentType] as? NSAttributedString.DocumentType {
+            usesWordMetrics = type == .officeOpenXML || type == .docFormat
         }
     }
 }

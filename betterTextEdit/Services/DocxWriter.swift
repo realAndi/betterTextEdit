@@ -178,20 +178,47 @@ enum WordML {
         uniqueKeysWithValues: highlights.map { ($0.value, $0.key) }
     )
 
-    /// The nearest face macOS ships for the Office fonts it doesn't — by
-    /// metrics where there's a close match, by classification otherwise.
+    /// The nearest face betterTextEdit has for an Office font macOS doesn't
+    /// ship — one with the same widths where there is one, so lines break
+    /// where Word breaks them, and by classification otherwise.
     static func standIn(for family: String) -> String {
         let name = family.lowercased()
+        // Carlito and Caladea, which betterTextEdit carries, are drawn to the
+        // same widths as Calibri and Cambria letter for letter.
+        if name.hasPrefix("calibri") { return "Carlito" }
+        if name.hasPrefix("cambria") { return "Caladea" }
+        // Faces macOS ships that come closest in width: Book Antiqua was drawn
+        // as Palatino's twin, and Aptos sets within half a percent of PT Sans.
+        if name.hasPrefix("aptos narrow") { return "PT Sans Narrow" }
+        if name.hasPrefix("aptos") { return "PT Sans" }
+        if name.hasPrefix("book antiqua") || name.hasPrefix("palatino") { return "Palatino" }
+        if name.hasPrefix("gill sans") { return "Gill Sans" }
         let monospaced = ["consolas", "courier", "lucida console", "cascadia", "mono", "code"]
-        let serif = ["cambria", "constantia", "garamond", "book antiqua", "palatino", "times", "georgia", "minion",
+        let serif = ["constantia", "garamond", "book antiqua", "palatino", "times", "georgia", "minion",
                      "baskerville", "caslon", "century", "bookman", "serif", "song", "mincho", "batang"]
         if monospaced.contains(where: name.contains) { return "Menlo" }
         if name.contains("sans") { return "Helvetica Neue" }
-        if serif.contains(where: name.contains) { return name.contains("cambria") ? "Georgia" : "Times New Roman" }
-        if name.hasPrefix("arial") || name.contains("calibri") || name.contains("aptos") || name.contains("segoe") {
-            return "Helvetica Neue"
-        }
+        if serif.contains(where: name.contains) { return "Times New Roman" }
         return "Helvetica Neue"
+    }
+
+    /// How tall a line of an Office font is, per point of size — its ascent,
+    /// descent, and line gap — for the fonts macOS doesn't have. A stand-in
+    /// can match a font's widths without matching its height (Caladea's
+    /// lines are shorter than Cambria's), and Word's lines are as tall as the
+    /// font the document names, so this is what a line is measured by.
+    static func officeLineMetrics(_ family: String) -> (ascent: CGFloat, descent: CGFloat, gap: CGFloat)? {
+        let units: (CGFloat, CGFloat, CGFloat)? = switch family.lowercased() {
+        case "calibri", "calibri light": (1950, 550, 0)
+        case "cambria": (1946, 455, 0)
+        case "aptos", "aptos display", "aptos narrow": (1923, 577, 0)
+        case "consolas": (1521, 527, 350)
+        case "garamond": (1765, 539, 0)
+        case "book antiqua": (1891, 578, 0)
+        case "century gothic": (2060, 451, 0)
+        default: nil
+        }
+        return units.map { ($0.0 / 2048, $0.1 / 2048, $0.2 / 2048) }
     }
 
     /// Sniffs an image's real format from its first bytes, since a file
@@ -1207,8 +1234,15 @@ private final class PackageBuilder {
             xml += "<w:pStyle w:val=\"\(paragraphStyleOverride)\"/>"
         }
 
+        // How the paragraph breaks across pages, as it came in — in the order
+        // the schema puts them, around the frame below.
+        let pagination = Set(((markAttributes[.wordPagination] as? String) ?? "").split(separator: " ").map(String.init))
+        if pagination.contains("keepNext"), !(1 ... 6).contains(headerLevel) { xml += "<w:keepNext/>" }
+        if pagination.contains("keepLines") { xml += "<w:keepLines/>" }
+
         // Kept verbatim: a drop cap's frame.
         if let extras { xml += extras }
+        if pagination.contains("noWidowControl") { xml += "<w:widowControl w:val=\"0\"/>" }
 
         if let list {
             xml += "<w:numPr><w:ilvl w:val=\"\(list.level)\"/><w:numId w:val=\"\(list.numID)\"/></w:numPr>"
@@ -1221,7 +1255,7 @@ private final class PackageBuilder {
         let offset = box.map(Self.contentOffset) ?? 0
         if let box {
             xml += borders(box)
-            if let fill = box.backgroundColor.flatMap(WordML.hex) {
+            if let fill = ((box as? WordParagraphBlock)?.shading ?? box.backgroundColor).flatMap(WordML.hex) {
                 xml += "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"\(fill)\"/>"
             } else if explicit {
                 xml += "<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"auto\"/>"
@@ -1291,22 +1325,26 @@ private final class PackageBuilder {
     }
 
     private func borders(_ block: NSTextBlock) -> String {
-        let styles = (block as? WordParagraphBlock)?.borderStyles ?? [:]
-        let edges: [(String, NSRectEdge)] = [("top", .minY), ("left", .minX), ("bottom", .maxY), ("right", .maxX)]
         var xml = ""
-        for (side, edge) in edges {
-            let width = block.width(for: .border, edge: edge)
-            guard width > 0 else { continue }
+        func border(_ side: String, style: String, width: CGFloat, space: CGFloat, color: NSColor?) {
+            // Widths are in eighths of a point, from 2 to 96; spacing in points.
             let size = min(max(Int((width * 8).rounded()), 2), 96)
-            let space = Int(block.width(for: .padding, edge: edge).rounded())
-            let color = block.borderColor(for: edge).flatMap(WordML.hex) ?? "auto"
-            xml += "<w:\(side) w:val=\"\(WordML.escape(styles[side] ?? "single"))\" w:sz=\"\(size)\" w:space=\"\(space)\" w:color=\"\(color)\"/>"
+            let hex = color.flatMap(WordML.hex) ?? "auto"
+            xml += "<w:\(side) w:val=\"\(WordML.escape(style))\" w:sz=\"\(size)\" w:space=\"\(Int(space.rounded()))\" w:color=\"\(hex)\"/>"
         }
-        if let between = (block as? WordParagraphBlock)?.betweenBorder {
-            let parts = between.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            if parts.count == 4 {
-                let size = min(max(Int(((Double(parts[1]) ?? 0.5) * 8).rounded()), 2), 96)
-                xml += "<w:between w:val=\"\(WordML.escape(parts[0]))\" w:sz=\"\(size)\" w:space=\"\(Int(Double(parts[2]) ?? 0))\" w:color=\"\(WordML.escape(parts[3]))\"/>"
+
+        if let word = block as? WordParagraphBlock {
+            // Word's own description of each side, as it was read.
+            for side in ["top", "left", "bottom", "right", "between"] {
+                guard let value = word.drawn(side) else { continue }
+                border(side, style: value.style, width: value.width, space: value.space, color: value.color)
+            }
+        } else {
+            let edges: [(String, NSRectEdge)] = [("top", .minY), ("left", .minX), ("bottom", .maxY), ("right", .maxX)]
+            for (side, edge) in edges {
+                let width = block.width(for: .border, edge: edge)
+                guard width > 0 else { continue }
+                border(side, style: "single", width: width, space: block.width(for: .padding, edge: edge), color: block.borderColor(for: edge))
             }
         }
         return xml.isEmpty ? "" : "<w:pBdr>\(xml)</w:pBdr>"
@@ -1355,7 +1393,7 @@ private final class PackageBuilder {
         }
 
         var right: CGFloat = 0
-        if let box {
+        if let box, !(box is WordParagraphBlock) {
             right = box.width(for: .margin, edge: .maxX) + box.width(for: .border, edge: .maxX) + box.width(for: .padding, edge: .maxX)
         } else if let tail = style?.tailIndent {
             // Positive tail indents are measured from the leading margin.

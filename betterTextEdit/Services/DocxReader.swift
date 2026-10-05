@@ -349,6 +349,11 @@ private struct RunProperties {
     var scale: CGFloat?
     /// A box round the run (`w:bdr`), as `width|RRGGBB`.
     var border: String?
+    /// The size from which Word kerns type (`w:kern`). Below it, and when it
+    /// isn't set, Word doesn't kern at all.
+    var kernFrom: CGFloat?
+    /// The ligatures Word sets (`w14:ligatures`): none unless asked for.
+    var ligatures: String?
 
     init() {}
 
@@ -385,6 +390,8 @@ private struct RunProperties {
                 ? "none"
                 : "\(Measure.eighths(bdr["sz"]) ?? 0.5)|\(bdr["color"].flatMap { $0.lowercased() == "auto" ? nil : $0 } ?? "000000")"
         }
+        kernFrom = Measure.halfPoints(node.value("w:kern"))
+        ligatures = node.value("w14:ligatures")
     }
 
     /// Lays `other` over this, keeping whatever it doesn't set.
@@ -415,6 +422,8 @@ private struct RunProperties {
         result.outline = other.outline ?? outline
         result.scale = other.scale ?? scale
         result.border = other.border ?? border
+        result.kernFrom = other.kernFrom ?? kernFrom
+        result.ligatures = other.ligatures ?? ligatures
         return result
     }
 }
@@ -453,6 +462,9 @@ private struct ParagraphProperties {
     var outlineLevel: Int?
     var bidi: Bool?
     var pageBreakBefore: Bool?
+    var keepNext: Bool?
+    var keepLines: Bool?
+    var widowControl: Bool?
     var contextual: Bool?
     /// Paragraph borders by side — `top`, `left`, `bottom`, `right`, `between`.
     var borders: [String: Border] = [:]
@@ -503,6 +515,9 @@ private struct ParagraphProperties {
         outlineLevel = node.value("w:outlineLvl").flatMap { Int($0) }
         bidi = Measure.isOn(node.child("w:bidi"))
         pageBreakBefore = Measure.isOn(node.child("w:pageBreakBefore"))
+        keepNext = Measure.isOn(node.child("w:keepNext"))
+        keepLines = Measure.isOn(node.child("w:keepLines"))
+        widowControl = Measure.isOn(node.child("w:widowControl"))
         contextual = Measure.isOn(node.child("w:contextualSpacing"))
         if let pBdr = node.child("w:pBdr") {
             for (side, names) in [("top", ["w:top"]), ("left", ["w:left", "w:start"]), ("bottom", ["w:bottom"]),
@@ -550,6 +565,9 @@ private struct ParagraphProperties {
         result.outlineLevel = other.outlineLevel ?? outlineLevel
         result.bidi = other.bidi ?? bidi
         result.pageBreakBefore = other.pageBreakBefore ?? pageBreakBefore
+        result.keepNext = other.keepNext ?? keepNext
+        result.keepLines = other.keepLines ?? keepLines
+        result.widowControl = other.widowControl ?? widowControl
         result.contextual = other.contextual ?? contextual
         // Each side is set or cleared on its own; `nil` and `none` clear one
         // the style set.
@@ -705,6 +723,12 @@ private final class ReadContext {
                 if type == "table" { defaultTableStyle = id }
             }
         }
+        // Generated documents often leave the default unmarked. Word then uses
+        // the paragraph style called Normal, line spacing and all.
+        if defaultParagraphStyle == nil {
+            defaultParagraphStyle = styles.values.first { $0.type == "paragraph" && $0.name.lowercased() == "normal" }?.id
+                ?? styles["Normal"].flatMap { $0.type == "paragraph" ? $0.id : nil }
+        }
     }
 
     private func readNumbering(_ root: XMLTree) {
@@ -839,10 +863,16 @@ private final class ReadContext {
 
     func unsupportedFeatures(document: XMLTree) -> [String] {
         var features: [String] = []
-        let names = Set(archive.entries.map(\.name))
-        func has(_ prefix: String) -> Bool { names.contains { $0.hasPrefix(prefix) } }
 
-        if has("word/comments") { features.append("comments") }
+        // Only comments that are there: Word, and the apps that write for it,
+        // leave an empty comments part behind, which has nothing to lose.
+        let directory = (mainPath as NSString).deletingLastPathComponent
+        let commentsPath = relationships.types.first { $0.value.hasSuffix("/comments") }
+            .flatMap { relationships.inside[$0.key] }
+            .map { PackagePath.resolve($0, from: directory) } ?? "word/comments.xml"
+        if let comments = archive.contents(named: commentsPath).flatMap(XMLTree.parse), !comments.children("w:comment").isEmpty {
+            features.append("comments")
+        }
         let all = Self.elementNames(in: document)
         if all.contains("w:ins") || all.contains("w:del") { features.append("tracked changes") }
         if document.descendants("w:sectPr").count > 1 { features.append("section layouts") }
@@ -889,6 +919,9 @@ extension NSAttributedString.Key {
     /// None of them should spread to text typed next to a labelled run.
     static let wordStructureLabels: [NSAttributedString.Key] = [
         .wordListMarker, .wordField, .wordNoteReference, .wordNoteBody, .wordNoteLabel,
+        // A heading keeps with the paragraph after it; what's typed after one
+        // is that next paragraph, which shouldn't.
+        .wordPagination,
         // Text typed after hidden text would otherwise be invisible too.
         .wordHidden,
     ]
@@ -1048,7 +1081,7 @@ private final class DocumentBuilder {
         }
 
         if let numbering, let numID {
-            appendMarker(numID: numID, level: level, definition: numbering, base: base, paragraphStyle: paragraphStyle)
+            appendMarker(numID: numID, level: level, definition: numbering, mark: mark, paragraphStyle: paragraphStyle)
         }
 
         writeInline(node.children, base: base, paragraph: paragraphStyle, link: nil, relationships: relationships)
@@ -1082,6 +1115,16 @@ private final class DocumentBuilder {
         if let styleID, styleID != context.defaultParagraphStyle {
             output.addAttribute(.wordParagraphStyle, value: styleID, range: range)
         }
+        // How the paragraph breaks across pages. Word keeps widows and orphans
+        // off a page's edges unless a paragraph says otherwise.
+        let pagination = [
+            properties.keepNext == true ? "keepNext" : nil,
+            properties.keepLines == true ? "keepLines" : nil,
+            properties.widowControl == false ? "noWidowControl" : nil,
+        ].compactMap { $0 }
+        if !pagination.isEmpty {
+            output.addAttribute(.wordPagination, value: pagination.joined(separator: " "), range: range)
+        }
         if let frame = properties.frame {
             output.addAttribute(.wordParagraphExtras, value: frame, range: range)
             if let spacing = node.child("w:pPr")?.child("w:spacing") {
@@ -1096,9 +1139,12 @@ private final class DocumentBuilder {
     /// - Contextual spacing — on Word's own List Paragraph style, among
     ///   others — drops the space between neighbours of the same style, which
     ///   is what keeps a list's items together.
-    /// - Automatic spacing, the HTML kind, collapses the way CSS margins do:
-    ///   the gap is the larger of the two, not their sum. Items of a list get
-    ///   none between them, and the top of the document gets none above it.
+    /// - Automatic spacing, the HTML kind, gives items of a list none between
+    ///   them, and the top of the document none above it.
+    ///
+    /// That the gap between two paragraphs is the larger of their spacings
+    /// rather than the sum is true of every paragraph in Word, and is left to
+    /// layout — see `WordLayoutManager` — so the values here stay Word's own.
     private func settleSpacing(
         after previous: Previous?,
         properties: ParagraphProperties,
@@ -1116,13 +1162,9 @@ private final class DocumentBuilder {
             if properties.contextual == true { style.paragraphSpacingBefore = 0 }
             if previous.contextual { previousAfter = 0 }
         }
-        if properties.beforeAuto == true, previous.afterAuto {
-            if isList, previous.isList {
-                previousAfter = 0
-                style.paragraphSpacingBefore = 0
-            } else {
-                style.paragraphSpacingBefore = max(style.paragraphSpacingBefore - previousAfter, 0)
-            }
+        if properties.beforeAuto == true, previous.afterAuto, isList, previous.isList {
+            previousAfter = 0
+            style.paragraphSpacingBefore = 0
         }
 
         guard previousAfter != previous.style.paragraphSpacing else { return }
@@ -1218,22 +1260,20 @@ private final class DocumentBuilder {
 
     private var lastBorder: (signature: String, depth: Int, end: Int, block: WordParagraphBlock)?
 
-    /// The block that draws a paragraph's borders and shading, shared with the
+    /// The block that marks a paragraph's borders and shading, shared with the
     /// paragraph before when the two have the same ones — Word draws one box
     /// round the group, not a box per paragraph.
     ///
-    /// Word places the box from the paragraph's indents; a text block lays
-    /// out from its own edges. So the block is moved in to where the text
-    /// starts, and the paragraph's indents and tab stops are taken back by the
-    /// same amount — the writer adds them together again.
+    /// The block takes no room of its own, so the paragraph keeps the indents
+    /// Word gave it; `WordLayoutManager` draws the box around them.
     private func borderBlock(for properties: ParagraphProperties, depth: Int, style: NSMutableParagraphStyle) -> WordParagraphBlock? {
         let drawn = properties.borders.filter { !["nil", "none"].contains($0.value.style) }
         guard !drawn.isEmpty || properties.shading != nil else { return nil }
 
-        let edges: [(String, NSRectEdge)] = [("top", .minY), ("left", .minX), ("bottom", .maxY), ("right", .maxX)]
+        // Word groups paragraphs whose borders, shading, and indents all match.
         let leftmost = min(style.headIndent, style.firstLineHeadIndent)
         let right = max(-style.tailIndent, 0)
-        let signature = edges.map { side, _ in
+        let signature = ["top", "left", "bottom", "right", "between"].map { side in
             drawn[side].map { "\($0.style),\($0.width),\($0.space),\($0.color ?? "")" } ?? "-"
         }.joined(separator: ";") + "|\(properties.shading ?? "")|\(leftmost)|\(right)"
 
@@ -1242,37 +1282,15 @@ private final class DocumentBuilder {
             block = last.block
         } else {
             block = WordParagraphBlock()
-            for (side, edge) in edges {
-                guard let border = drawn[side] else { continue }
-                block.setWidth(border.width, type: .absoluteValueType, for: .border, edge: edge)
-                block.setBorderColor(border.color.flatMap(WordML.color(hex:)) ?? .black, for: edge)
-                block.setWidth(border.space, type: .absoluteValueType, for: .padding, edge: edge)
-                block.borderStyles[side] = border.style
+            for (side, border) in drawn {
+                block.borders[side] = WordParagraphBlock.Border(
+                    style: border.style,
+                    width: border.width,
+                    space: border.space,
+                    color: border.color.flatMap(WordML.color(hex:))
+                )
             }
-            if let between = properties.borders["between"], !["nil", "none"].contains(between.style) {
-                block.betweenBorder = "\(between.style)|\(between.width)|\(between.space)|\(between.color ?? "auto")"
-            }
-            if let shading = properties.shading { block.backgroundColor = WordML.color(hex: shading) }
-            // Without a width a text block shrinks to nothing — one letter a
-            // line. A hundred percent is the column, less the margins.
-            block.setValue(100, type: .percentageValueType, for: .width)
-
-            let leftChrome = block.width(for: .border, edge: .minX) + block.width(for: .padding, edge: .minX)
-            let rightChrome = block.width(for: .border, edge: .maxX) + block.width(for: .padding, edge: .maxX)
-            block.setWidth(max(leftmost - leftChrome, 0), type: .absoluteValueType, for: .margin, edge: .minX)
-            block.setWidth(max(right - rightChrome, 0), type: .absoluteValueType, for: .margin, edge: .maxX)
-        }
-
-        // The text inside the block starts where the box's content does.
-        let offset = block.width(for: .margin, edge: .minX) + block.width(for: .border, edge: .minX)
-            + block.width(for: .padding, edge: .minX)
-        style.headIndent = max(style.headIndent - offset, 0)
-        style.firstLineHeadIndent = max(style.firstLineHeadIndent - offset, 0)
-        style.tailIndent = 0
-        style.tabStops = style.tabStops.compactMap { tab in
-            tab.location - offset > 0
-                ? NSTextTab(textAlignment: tab.alignment, location: tab.location - offset, options: tab.options)
-                : nil
+            block.shading = properties.shading.flatMap(WordML.color(hex:))
         }
         lastBorder = (signature, depth, -1, block)
         return block
@@ -1284,7 +1302,7 @@ private final class DocumentBuilder {
         numID: String,
         level: Int,
         definition: ReadContext.NumberingLevel,
-        base: RunProperties,
+        mark: RunProperties,
         paragraphStyle: NSMutableParagraphStyle
     ) {
         let abstract = context.abstractID(for: numID) ?? numID
@@ -1346,13 +1364,25 @@ private final class DocumentBuilder {
         }
         let lead = paragraphStyle.tabStops.first.map { $0.location > 0.5 } == true ? "\t" : ""
 
-        var markerRun = base.merged(with: definition.run)
+        // Word formats a list's number or bullet like the paragraph mark —
+        // which is how a number gets a different typeface or size from the
+        // text — and then as the level says.
+        var markerRun = mark.merged(with: definition.run)
         // Bullets in Symbol or Wingdings have been mapped to real characters;
         // drawing them in the dingbat font would turn them back into letters.
         if definition.format == "bullet", let font = definition.run.font,
            ["symbol", "wingdings", "webdings"].contains(where: { font.lowercased().hasPrefix($0) }) {
-            markerRun.font = base.font
-            markerRun.fontTheme = base.fontTheme
+            markerRun.font = mark.font
+            markerRun.fontTheme = mark.fontTheme
+        }
+        // A marker in a typeface this Mac doesn't have — Google Docs sets its
+        // bullets in Noto Sans Symbols — is drawn like the paragraph's own
+        // text, as Word draws it, rather than in a stand-in that would make
+        // every item's first line taller than Word's.
+        if let font = definition.run.font, markerRun.font == font,
+           !NSFontManager.shared.availableFontFamilies.contains(font) {
+            markerRun.font = mark.font
+            markerRun.fontTheme = mark.fontTheme
         }
         markerRun.underline = nil
         markerRun.highlight = nil
@@ -1743,6 +1773,15 @@ private final class DocumentBuilder {
         let content = node.name == "mc:AlternateContent" ? Self.alternate(node) : [node]
         let isEmbeddedObject = !node.descendants("o:OLEObject").isEmpty
 
+        // A VML shape type on its own only defines a kind of shape for others
+        // to use — Google Docs puts one at the top of every document it saves
+        // — and draws nothing, so it gets nothing here either.
+        if node.name == "w:pict" {
+            let drawable = ["v:shape", "v:rect", "v:roundrect", "v:oval", "v:line", "v:polyline", "v:arc", "v:curve",
+                            "v:group", "v:image", "o:OLEObject", "w:control"]
+            if !drawable.contains(where: { !node.descendants($0).isEmpty }) { return }
+        }
+
         if let rule = horizontalRule(in: content) {
             rule.originalXML = node.originalXML ?? node.xml
             rule.namespaces = context.namespaces
@@ -2117,6 +2156,13 @@ private final class DocumentBuilder {
         }
 
         let rowCount = rows.count
+        // Word draws the line between two cells once, and gives it room once.
+        // A text table gives each cell its own four borders, so a shared edge
+        // already drawn by the cell above or to the left is left off the cell
+        // below or to the right — otherwise every inside line would be twice
+        // as thick, and every row a border's width taller than Word's.
+        var drawnBelow: Set<[Int]> = []
+        var drawnRight: Set<[Int]> = []
         for cell in cells {
             let block = NSTextTableBlock(table: table, startingRow: cell.row, rowSpan: cell.rowSpan,
                                          startingColumn: cell.column, columnSpan: cell.span)
@@ -2162,7 +2208,11 @@ private final class DocumentBuilder {
                 (.maxY, ["w:bottom"], [isBottom ? "w:bottom" : "w:insideH"]),
                 (.maxX, ["w:right", "w:end"], [isRight ? (borders?.child("w:right") != nil ? "w:right" : "w:end") : "w:insideV"]),
             ]
+            let columns = cell.column ..< cell.column + cell.span
+            let rowsSpanned = cell.row ..< cell.row + cell.rowSpan
             for (edge, own, inherited) in edges {
+                if edge == .minY, !isTop, columns.allSatisfy({ drawnBelow.contains([cell.row - 1, $0]) }) { continue }
+                if edge == .minX, !isLeft, rowsSpanned.allSatisfy({ drawnRight.contains([$0, cell.column - 1]) }) { continue }
                 let border = own.lazy.compactMap { cellBorders?.child($0) }.first
                     ?? inherited.lazy.compactMap { borders?.child($0) }.first
                 guard let border, let kind = border["val"], !["nil", "none"].contains(kind) else { continue }
@@ -2170,6 +2220,8 @@ private final class DocumentBuilder {
                 block.setWidth(width, type: .absoluteValueType, for: .border, edge: edge)
                 let color = border["color"].flatMap { $0 == "auto" ? nil : WordML.color(hex: $0) } ?? .black
                 block.setBorderColor(color, for: edge)
+                if edge == .maxY { for column in columns { drawnBelow.insert([cell.row + cell.rowSpan - 1, column]) } }
+                if edge == .maxX { for row in rowsSpanned { drawnRight.insert([row, cell.column + cell.span - 1]) } }
             }
 
             if let fill = tcPr?.child("w:shd")?["fill"], fill.lowercased() != "auto", let color = WordML.color(hex: fill) {
@@ -2332,7 +2384,23 @@ private final class DocumentBuilder {
         default:
             if let position = run.position, position != 0 { attributes[.baselineOffset] = position }
         }
-        if let spacing = run.spacing, spacing != 0 { attributes[.kern] = spacing }
+        if let spacing = run.spacing, spacing != 0 {
+            attributes[.kern] = spacing
+        } else if let from = run.kernFrom, from > 0, (run.size ?? 10) >= from {
+            // Kerned the way the font's own pairs say, as Word does at this size.
+        } else {
+            // Word doesn't kern unless asked to, and AppKit kerns everything —
+            // which sets each line a little tighter than Word does, enough to
+            // move where lines break. Zero turns AppKit's kerning off.
+            attributes[.kern] = 0
+        }
+        // Nor does Word join letters into ligatures unless asked to; Calibri's
+        // `ti` and `ft` would otherwise be drawn as one shape here and two there.
+        attributes[.ligature] = switch run.ligatures {
+        case "all": 2
+        case let value? where value.lowercased().contains("standard"): 1
+        default: 0
+        }
         // What Word has and the text system doesn't — carried as labels the
         // layout manager draws and the writer writes back.
         if run.hidden == true { attributes[.wordHidden] = true }

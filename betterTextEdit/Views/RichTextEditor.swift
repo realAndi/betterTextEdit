@@ -225,15 +225,20 @@ struct RichTextEditor: NSViewRepresentable {
         // Word's capitals, hidden text, tab leaders, and boxed runs are drawn
         // by the layout manager — see `WordLayoutManager`.
         let layoutManager = WordLayoutManager()
+        layoutManager.usesWordMetrics = layout.usesWordMetrics
         let container = NSTextContainer(
             size: NSSize(width: layout.textWidth, height: .greatestFiniteMagnitude)
         )
         container.widthTracksTextView = false
         container.heightTracksTextView = false
+        // Word runs text right up to the margins; AppKit's default five points
+        // of padding each side would break every line somewhere else.
+        if layout.usesWordMetrics { container.lineFragmentPadding = 0 }
         layoutManager.addTextContainer(container)
         document.storage.addLayoutManager(layoutManager)
 
-        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: layout.paperWidth, height: 200), textContainer: container)
+        let textView = PageTextView(frame: NSRect(x: 0, y: 0, width: layout.paperWidth, height: 200), textContainer: container)
+        textView.margins = NSEdgeInsets(top: layout.topMargin, left: layout.leftMargin, bottom: layout.bottomMargin, right: layout.rightMargin)
         textView.delegate = context.coordinator
         textView.isRichText = true
         textView.isEditable = true
@@ -405,6 +410,21 @@ struct RichTextEditor: NSViewRepresentable {
     }
 }
 
+// MARK: - Page
+
+/// A text view that sets its text inside the page's own margins — the left
+/// one on the left and the right one on the right, which a text view's inset,
+/// the same on both sides, can't do for a document whose margins differ.
+final class PageTextView: NSTextView {
+    var margins = NSEdgeInsets(top: 72, left: 72, bottom: 72, right: 72) {
+        didSet { needsDisplay = true }
+    }
+
+    override var textContainerOrigin: NSPoint {
+        NSPoint(x: margins.left, y: margins.top)
+    }
+}
+
 // MARK: - Page host
 
 /// Holds the text view as a page: centred, at the document's paper width, on a
@@ -459,9 +479,11 @@ final class PageHostView: NSView {
             return textView.frame.height
         }
         layoutManager.ensureLayout(for: container)
-        let used = layoutManager.usedRect(for: container).height
+        let used = layoutManager.usedRect(for: container).maxY
         let clipHeight = enclosingScrollView?.contentView.bounds.height ?? 0
-        return max(used + textView.textContainerInset.height * 2, clipHeight - margin * 2, 200)
+        let margins = (textView as? PageTextView)?.margins
+        let vertical = margins.map { $0.top + $0.bottom } ?? textView.textContainerInset.height * 2
+        return max(used + vertical, clipHeight - margin * 2, 200)
     }
 
     override func draw(_: NSRect) {

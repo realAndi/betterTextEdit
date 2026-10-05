@@ -37,6 +37,11 @@ extension NSAttributedString.Key {
     /// Paragraph properties kept verbatim — a drop cap's frame, say — as raw
     /// `w:pPr` children.
     static let wordParagraphExtras = NSAttributedString.Key("betterTextEdit.wordParagraphExtras")
+    /// How a paragraph breaks across pages, as space-separated words:
+    /// `keepNext` (on the same page as the next paragraph), `keepLines` (not
+    /// split at all), and `noWidowControl` — Word keeps a paragraph's first
+    /// or last line from standing alone on a page unless it's told not to.
+    static let wordPagination = NSAttributedString.Key("betterTextEdit.wordPagination")
 }
 
 extension NSAttributedString.DocumentAttributeKey {
@@ -54,15 +59,148 @@ extension NSTextTab.OptionKey {
 // MARK: - Paragraph borders
 
 /// The box Word draws round a paragraph — or a run of paragraphs with the same
-/// borders — and its shading, as a text block the text system lays out and
-/// draws. It remembers the Word line styles AppKit can't draw (double, dotted)
-/// so a save writes back what came in.
+/// borders — and its shading.
+///
+/// Word places a paragraph's box differently from how a text block lays out.
+/// Its borders sit outside the text, out into the margin if need be, rather
+/// than pushing the text in; the space before a paragraph goes above its top
+/// border, not inside it; and the line under the last paragraph takes room of
+/// its own. So this block takes no room in AppKit's layout at all — it only
+/// marks which paragraphs share a box — and `WordLayoutManager` makes the room
+/// and draws the box by Word's rules. It keeps Word's own description of every
+/// border, so a save writes back what came in.
 final class WordParagraphBlock: NSTextBlock {
-    /// Word's `w:val` for each side that has a border: `top`, `left`,
-    /// `bottom`, `right`.
-    var borderStyles: [String: String] = [:]
-    /// The border Word draws between paragraphs of one group, verbatim.
-    var betweenBorder: String?
+    struct Border: Equatable {
+        /// Word's line style: `single`, `double`, `dotted`, `thick`, …
+        var style: String
+        var width: CGFloat
+        /// The gap Word leaves between the border and the text.
+        var space: CGFloat
+        /// `nil` is Word's `auto`: black on a white page.
+        var color: NSColor?
+
+        /// The width Word draws: the nearest of its own line widths at or
+        /// below the one asked for, so a seven-eighths-point border draws as
+        /// three quarters. It still takes the room it asked for.
+        var drawnWidth: CGFloat {
+            let widths: [CGFloat] = [0.25, 0.5, 0.75, 1, 1.5, 2.25, 3, 4.5, 6]
+            return widths.last { $0 <= width + 0.001 } ?? width
+        }
+    }
+
+    /// Borders by side — `top`, `left`, `bottom`, `right` — and `between`, the
+    /// line Word draws between the paragraphs of one box.
+    var borders: [String: Border] = [:]
+    var shading: NSColor?
+
+    override init() {
+        super.init()
+        // Without a width a text block shrinks to nothing — one letter a line.
+        // A hundred percent with no margins, borders, or padding is the column,
+        // exactly as if there were no block.
+        setValue(100, type: .percentageValueType, for: .width)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    /// A side's border, if it has one that draws.
+    func drawn(_ side: String) -> Border? {
+        guard let border = borders[side], border.width > 0, !["nil", "none"].contains(border.style) else { return nil }
+        return border
+    }
+}
+
+/// A line's height the way Word works it out: from the tallest type on the
+/// line, measured from the font itself — its ascent, descent, and line gap,
+/// unrounded — and then stretched or set by the paragraph's line spacing.
+struct WordLineMetrics {
+    private(set) var ascent: CGFloat = 0
+    private(set) var descent: CGFloat = 0
+    private(set) var leading: CGFloat = 0
+
+    /// `nil` when the line has a picture on it, whose height the text system
+    /// knows and this doesn't, or nothing visible to measure.
+    init?(_ text: NSAttributedString, _ range: NSRange) {
+        // Spaces and tabs don't size a line in Word, however large they're
+        // set — only what's printed does. Nor does the paragraph mark, unless
+        // it's all the line has: it gives an empty paragraph its height, but a
+        // mark set larger than the text before it makes no difference.
+        let string = text.string as NSString
+        var content = range
+        var mark: NSRange?
+        if content.length > 0, [0x0A, 0x0D, 0x2029, 0x85].contains(string.character(at: NSMaxRange(range) - 1)) {
+            content.length -= 1
+            mark = NSRange(location: NSMaxRange(content), length: 1)
+        }
+        guard let measured = Self.measure(text, content, skippingBlanks: true)
+            ?? mark.flatMap({ Self.measure(text, $0, skippingBlanks: false) })
+            ?? Self.measure(text, content, skippingBlanks: false)
+        else { return nil }
+        self = measured
+    }
+
+    private init() {}
+
+    private static func measure(_ text: NSAttributedString, _ range: NSRange, skippingBlanks: Bool) -> WordLineMetrics? {
+        guard range.length > 0 else { return nil }
+        let string = text.string as NSString
+        var line = WordLineMetrics()
+        var measured = false
+        var picture = false
+        text.enumerateAttributes(in: range, options: []) { attributes, run, stop in
+            if attributes[.attachment] != nil {
+                picture = true
+                stop.pointee = true
+                return
+            }
+            if skippingBlanks, string.substring(with: run).allSatisfy({ $0 == " " || $0 == "\t" }) { return }
+            guard attributes[.wordHidden] == nil, let font = attributes[.font] as? NSFont else { return }
+            // A stand-in for a font this Mac doesn't have is measured as the
+            // font the document asked for, which is what Word measures.
+            if let original = attributes[.wordFontName] as? String, font.familyName == WordML.standIn(for: original),
+               let office = WordML.officeLineMetrics(original) {
+                line.ascent = max(line.ascent, office.ascent * font.pointSize)
+                line.descent = max(line.descent, office.descent * font.pointSize)
+                line.leading = max(line.leading, office.gap * font.pointSize)
+            } else {
+                let face = font as CTFont
+                line.ascent = max(line.ascent, CTFontGetAscent(face))
+                line.descent = max(line.descent, CTFontGetDescent(face))
+                line.leading = max(line.leading, CTFontGetLeading(face))
+            }
+            measured = true
+        }
+        // A picture's height is the text system's to know, not this.
+        return measured && !picture ? line : nil
+    }
+
+    /// The line's height and its baseline's distance from the top, under the
+    /// paragraph's line spacing as the reader set it: `lineHeightMultiple` for
+    /// Word's multiples, a minimum for *at least*, and both for *exactly*.
+    func placed(by style: NSParagraphStyle) -> (height: CGFloat, baseline: CGFloat) {
+        // Exactly: Word puts the baseline four fifths of the way down the line,
+        // whatever the type.
+        if style.maximumLineHeight > 0, style.minimumLineHeight == style.maximumLineHeight {
+            return (style.maximumLineHeight, style.maximumLineHeight * 0.8)
+        }
+        let multiple = style.lineHeightMultiple > 0 ? style.lineHeightMultiple : 1
+        var height = (ascent + descent + leading) * multiple
+        // The line gap sits above the type. The room a multiple adds goes below
+        // it; the room one takes away comes out of the whole line evenly.
+        var baseline = (leading + ascent) * min(multiple, 1)
+        // At least: any extra room goes above the type.
+        if style.minimumLineHeight > height {
+            baseline += style.minimumLineHeight - height
+            height = style.minimumLineHeight
+        }
+        if style.maximumLineHeight > 0, height > style.maximumLineHeight {
+            height = style.maximumLineHeight
+            baseline = height * 0.8
+        }
+        return (height, baseline)
+    }
 }
 
 // MARK: - Horizontal rules
@@ -271,8 +409,32 @@ final class PreservedObjectCell: NSTextAttachmentCell {
 /// Capitals and hidden text change what's drawn without changing the text:
 /// glyph generation swaps in capital glyphs — smaller ones for small caps —
 /// and generates nothing visible for hidden runs, so the letters as typed are
-/// what gets saved. Tab leaders and boxed runs are drawn behind the glyphs.
+/// what gets saved. Tab leaders, boxed runs, and paragraph borders and shading
+/// are drawn behind the glyphs.
+///
+/// For a Word document it also measures lines the way Word does — see
+/// `usesWordMetrics`.
 final class WordLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
+    /// Lay lines out by Word's measurements rather than AppKit's.
+    ///
+    /// The two disagree about almost every line. AppKit rounds a line's height
+    /// to whole points — 13 for ten-point Calibri, where Word uses the font's
+    /// own 12.2 — and over a page of text that's several lines' difference.
+    /// Word also adds a paragraph's space before and the previous paragraph's
+    /// space after by taking the larger of the two rather than their sum; it
+    /// keeps the space before the first paragraph of all; and it puts the room
+    /// a line gains from line spacing below the text where AppKit puts it above.
+    /// With this on, every line is placed where Word places it, and justified
+    /// text is broken and spaced as Word does it — see `WordTypesetter`.
+    var usesWordMetrics = false {
+        didSet {
+            guard usesWordMetrics != oldValue else { return }
+            typesetter = usesWordMetrics ? WordTypesetter() : NSTypesetter.sharedSystemTypesetter
+            guard let storage = textStorage else { return }
+            invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+        }
+    }
+
     override init() {
         super.init()
         delegate = self
@@ -280,6 +442,93 @@ final class WordLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
 
     @available(*, unavailable)
     required init?(coder _: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // MARK: Word's lines
+
+    func layoutManager(
+        _: NSLayoutManager,
+        shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+        baselineOffset: UnsafeMutablePointer<CGFloat>,
+        in _: NSTextContainer,
+        forGlyphRange glyphRange: NSRange
+    ) -> Bool {
+        guard usesWordMetrics, let storage = textStorage, storage.length > 0 else { return false }
+        let characters = characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        guard characters.length > 0, NSMaxRange(characters) <= storage.length else { return false }
+        let string = storage.string as NSString
+        let style = paragraphStyle(at: characters.location, in: storage)
+
+        let rect = lineFragmentRect.pointee
+        let used = lineFragmentUsedRect.pointee
+        // A line with a picture on it keeps AppKit's own measure of the line,
+        // which is the one that knows how tall the picture is.
+        let line: (height: CGFloat, baseline: CGFloat) = if let metrics = WordLineMetrics(storage, characters) {
+            metrics.placed(by: style)
+        } else {
+            (used.height, baselineOffset.pointee - (used.minY - rect.minY))
+        }
+
+        let startsParagraph = characters.location == 0
+            || Self.isParagraphBreak(string.character(at: characters.location - 1))
+        let endsParagraph = NSMaxRange(characters) == storage.length
+            || Self.isParagraphBreak(string.character(at: NSMaxRange(characters) - 1))
+        let box = style.textBlocks.last as? WordParagraphBlock
+
+        var above: CGFloat = 0
+        if startsParagraph {
+            let previous = characters.location > 0 ? paragraphStyle(at: characters.location - 1, in: storage) : nil
+            above = style.paragraphSpacingBefore
+            // Word keeps the larger of this paragraph's space before and the
+            // last one's space after, rather than both — unless the two are in
+            // different cells, which don't share space.
+            if let previous, Self.sameContainer(previous, style) {
+                above = max(above - previous.paragraphSpacing, 0)
+            }
+            if let box {
+                let previousBox = previous?.textBlocks.last as? WordParagraphBlock
+                if previousBox !== box, let top = box.drawn("top") {
+                    above += top.width + top.space
+                } else if previousBox === box, let between = box.drawn("between") {
+                    above += between.width + between.space
+                }
+            }
+        }
+
+        var below: CGFloat = 0
+        if endsParagraph {
+            below = style.paragraphSpacing
+            if let box, let bottom = box.drawn("bottom") {
+                let next = NSMaxRange(characters) < storage.length ? paragraphStyle(at: NSMaxRange(characters), in: storage) : nil
+                // The bottom border closes the box, under its last paragraph.
+                if next?.textBlocks.last as? WordParagraphBlock !== box {
+                    below = bottom.space + bottom.width + below
+                }
+            }
+        }
+
+        lineFragmentRect.pointee.size.height = above + line.height + below
+        lineFragmentUsedRect.pointee.origin.y = rect.minY + above
+        lineFragmentUsedRect.pointee.size.height = line.height
+        baselineOffset.pointee = above + line.baseline
+        return true
+    }
+
+    private func paragraphStyle(at index: Int, in storage: NSTextStorage) -> NSParagraphStyle {
+        storage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle ?? .default
+    }
+
+    private static func isParagraphBreak(_ unit: unichar) -> Bool {
+        unit == 0x0A || unit == 0x0D || unit == 0x2029 || unit == 0x85
+    }
+
+    /// Whether two paragraphs sit in the same cell — or both outside any
+    /// table — so that space between them is shared.
+    private static func sameContainer(_ first: NSParagraphStyle, _ second: NSParagraphStyle) -> Bool {
+        let a = first.textBlocks.filter { !($0 is WordParagraphBlock) }
+        let b = second.textBlocks.filter { !($0 is WordParagraphBlock) }
+        return a.count == b.count && zip(a, b).allSatisfy { $0 === $1 }
+    }
 
     func layoutManager(
         _ layoutManager: NSLayoutManager,
@@ -353,6 +602,8 @@ final class WordLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         guard let storage = textStorage, let container = textContainers.first else { return }
         let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
 
+        drawParagraphBoxes(in: characters, storage: storage, container: container, origin: origin)
+
         // Boxed runs.
         storage.enumerateAttribute(.wordRunBorder, in: characters, options: []) { value, range, _ in
             guard let value = value as? String else { return }
@@ -422,6 +673,154 @@ final class WordLayoutManager: NSLayoutManager, NSLayoutManagerDelegate {
         while x + markWidth <= end - markWidth / 2 {
             (mark as NSString).draw(at: NSPoint(x: origin.x + fragment.minX + x, y: top), withAttributes: markAttributes)
             x += markWidth
+        }
+    }
+
+    // MARK: Paragraph boxes
+
+    /// Draws the borders and shading of every paragraph box with a line in
+    /// `characters`, where Word draws them: around the text at each border's
+    /// own distance, in the margin if that's where it falls, with the lines
+    /// running a point and a half past the text at the ends.
+    private func drawParagraphBoxes(in characters: NSRange, storage: NSTextStorage, container: NSTextContainer, origin: NSPoint) {
+        var drawn: Set<Int> = []
+        storage.enumerateAttribute(.paragraphStyle, in: characters, options: []) { value, range, _ in
+            guard let box = (value as? NSParagraphStyle)?.textBlocks.last as? WordParagraphBlock else { return }
+            let group = boxRange(box, around: range.location, storage: storage)
+            guard drawn.insert(group.location).inserted else { return }
+            drawBox(box, around: group, storage: storage, container: container, origin: origin)
+        }
+    }
+
+    /// The paragraphs that share `box` with the one at `index`.
+    private func boxRange(_ box: WordParagraphBlock, around index: Int, storage: NSTextStorage) -> NSRange {
+        let string = storage.string as NSString
+        let paragraph = string.paragraphRange(for: NSRange(location: index, length: 0))
+        var start = paragraph.location
+        while start > 0, paragraphStyle(at: start - 1, in: storage).textBlocks.last === box {
+            start = string.paragraphRange(for: NSRange(location: start - 1, length: 0)).location
+        }
+        var end = NSMaxRange(paragraph)
+        while end < string.length, paragraphStyle(at: end, in: storage).textBlocks.last === box {
+            end = NSMaxRange(string.paragraphRange(for: NSRange(location: end, length: 0)))
+        }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private func drawBox(_ box: WordParagraphBlock, around characters: NSRange, storage: NSTextStorage,
+                         container: NSTextContainer, origin: NSPoint) {
+        let glyphs = glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return }
+        let fragment = lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        let textTop = lineFragmentUsedRect(forGlyphAt: glyphs.location, effectiveRange: nil).minY
+        let textBottom = lineFragmentUsedRect(forGlyphAt: NSMaxRange(glyphs) - 1, effectiveRange: nil).maxY
+
+        // Across: from the paragraph's indents, which is where Word measures
+        // the box from — not from where the text happens to reach.
+        let style = paragraphStyle(at: characters.location, in: storage)
+        let padding = container.lineFragmentPadding
+        let measure = fragment.width - padding * 2
+        var leftIndent = min(style.headIndent, style.firstLineHeadIndent)
+        if !style.textLists.isEmpty, let marker = style.tabStops.first(where: { $0.location < style.headIndent }) {
+            // A list's marker sits at a tab stop, its first line at zero.
+            leftIndent = min(style.headIndent, marker.location)
+        }
+        let rightIndent = style.tailIndent < 0 ? -style.tailIndent : (style.tailIndent > 0 ? max(measure - style.tailIndent, 0) : 0)
+        let textLeft = fragment.minX + padding + leftIndent
+        let textRight = fragment.minX + padding + measure - rightIndent
+
+        let top = box.drawn("top")
+        let bottom = box.drawn("bottom")
+        let left = box.drawn("left")
+        let right = box.drawn("right")
+        // Word draws a side's line a point and a quarter beyond its spacing,
+        // and with no line there, runs the top and bottom on a point and a half.
+        let leftInner = textLeft - (left.map { $0.space + 1.25 } ?? 1.5)
+        let rightInner = textRight + (right.map { $0.space + 1.25 } ?? 1.5)
+        let outerLeft = leftInner - (left?.width ?? 0)
+        let outerRight = rightInner + (right?.width ?? 0)
+        let innerTop = textTop - (top?.space ?? 0)
+        let innerBottom = textBottom + (bottom?.space ?? 0)
+        let outerTop = innerTop - (top?.width ?? 0)
+        let outerBottom = innerBottom + (bottom?.width ?? 0)
+
+        func place(_ rect: NSRect) -> NSRect {
+            rect.offsetBy(dx: origin.x, dy: origin.y)
+        }
+
+        // A text view clips what it draws to its text container, and a box
+        // reaches out into the margin. Open the clip out sideways to the whole
+        // view, keeping its top and bottom — on paper those are the page's.
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        if let context = NSGraphicsContext.current?.cgContext, let view = container.textView {
+            let clip = context.boundingBoxOfClipPath
+            NSBezierPath(rect: NSRect(x: view.bounds.minX, y: clip.minY, width: view.bounds.width, height: clip.height)).setClip()
+        }
+
+        if let shading = box.shading {
+            shading.setFill()
+            place(NSRect(x: leftInner, y: innerTop, width: rightInner - leftInner, height: innerBottom - innerTop)).fill()
+        }
+        if let top {
+            drawBorder(top, in: place(NSRect(x: outerLeft, y: outerTop, width: outerRight - outerLeft, height: top.drawnWidth)), horizontal: true)
+        }
+        if let bottom {
+            drawBorder(bottom, in: place(NSRect(x: outerLeft, y: innerBottom, width: outerRight - outerLeft, height: bottom.drawnWidth)), horizontal: true)
+        }
+        if let left {
+            drawBorder(left, in: place(NSRect(x: outerLeft, y: outerTop, width: left.drawnWidth, height: outerBottom - outerTop)), horizontal: false)
+        }
+        if let right {
+            drawBorder(right, in: place(NSRect(x: rightInner, y: outerTop, width: right.drawnWidth, height: outerBottom - outerTop)), horizontal: false)
+        }
+
+        // Between the paragraphs of the box, above each one after the first.
+        guard let between = box.drawn("between") else { return }
+        let string = storage.string as NSString
+        var paragraph = string.paragraphRange(for: NSRange(location: characters.location, length: 0))
+        while NSMaxRange(paragraph) < NSMaxRange(characters) {
+            paragraph = string.paragraphRange(for: NSRange(location: NSMaxRange(paragraph), length: 0))
+            let glyph = glyphIndexForCharacter(at: paragraph.location)
+            guard glyph < numberOfGlyphs else { break }
+            let lineTop = lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil).minY
+            let y = lineTop - between.space - between.width
+            drawBorder(between, in: place(NSRect(x: outerLeft, y: y, width: outerRight - outerLeft, height: between.drawnWidth)), horizontal: true)
+        }
+    }
+
+    /// One border line, filling `rect`, in Word's line style as near as it goes.
+    private func drawBorder(_ border: WordParagraphBlock.Border, in rect: NSRect, horizontal: Bool) {
+        (border.color ?? .black).set()
+        switch border.style {
+        case "double":
+            // Two thin lines with a gap between, in the room of one.
+            let third = (horizontal ? rect.height : rect.width) / 3
+            if horizontal {
+                NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: third).fill()
+                NSRect(x: rect.minX, y: rect.maxY - third, width: rect.width, height: third).fill()
+            } else {
+                NSRect(x: rect.minX, y: rect.minY, width: third, height: rect.height).fill()
+                NSRect(x: rect.maxX - third, y: rect.minY, width: third, height: rect.height).fill()
+            }
+        case "dotted", "dashed", "dashSmallGap", "dotDash", "dotDotDash", "dashDotStroked":
+            let thickness = horizontal ? rect.height : rect.width
+            let path = NSBezierPath()
+            path.lineWidth = thickness
+            if horizontal {
+                path.move(to: NSPoint(x: rect.minX, y: rect.midY))
+                path.line(to: NSPoint(x: rect.maxX, y: rect.midY))
+            } else {
+                path.move(to: NSPoint(x: rect.midX, y: rect.minY))
+                path.line(to: NSPoint(x: rect.midX, y: rect.maxY))
+            }
+            let dash: [CGFloat] = border.style == "dotted"
+                ? [thickness, thickness]
+                : [thickness * 4, thickness * 2]
+            path.setLineDash(dash, count: dash.count, phase: 0)
+            path.stroke()
+        default:
+            rect.fill()
         }
     }
 }

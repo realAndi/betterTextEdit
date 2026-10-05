@@ -17,8 +17,16 @@ since they're read by someone deciding whether to click Install.
   destinations, and tables keep merged cells. Highlighting, pictures,
   headings, footnotes, tables of contents and headers and footers all survive
   being edited and saved.
-- Typefaces this Mac doesn't have, such as Calibri and Aptos, are shown in a
-  close match and saved under their real names.
+- Pages look the way they do in Word. Lines, paragraph spacing, borders and
+  justified text land where Word puts them, so a one-page résumé stays one
+  page and every line breaks in the same place.
+- Calibri and Cambria are shown in Carlito and Caladea, free typefaces drawn
+  to the same widths, so lines break exactly where Word breaks them. Other
+  typefaces this Mac doesn't have, such as Aptos, are shown in the closest
+  match. All are saved under their real names.
+- PDF export and printing start new pages where Word does. Headings stay
+  with what follows, and a paragraph's first or last line isn't left alone on
+  a page. Page breaks in the document now start a new page.
 - Opens Word templates and macro-enabled documents, and saves them as a copy.
 - Saves OpenDocument files in place, and can export Word 97–2004 files.
 - A4 and other paper sizes now keep their height when saved.
@@ -61,6 +69,12 @@ since they're read by someone deciding whether to click Install.
   replaces it with plain text.
 - Opening files from the Finder while betterTextEdit is running no longer
   opens extra windows, and relaunching no longer brings back duplicates.
+- PDF export and printing put text the right distance from the top of the
+  page when a document's top and bottom margins differ, and no longer add a
+  blank page at the end.
+- Word documents from Google Docs no longer show a stray "Shape" box at the
+  top, and an empty comments section no longer counts as content that can't
+  be kept.
 
 ## 1.0.1
 

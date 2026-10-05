@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A100000000000000000000FE /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = B100000000000000000000FE /* AppIcon.icns */; };
+		A10000000000000000000500 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000500 /* Fonts */; };
 		A10000000000000000000001 /* BetterTextEditApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000001 /* BetterTextEditApp.swift */; };
 		A10000000000000000000002 /* EditorDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* EditorDocument.swift */; };
 		A10000000000000000000003 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000003 /* AppModel.swift */; };
@@ -57,6 +58,7 @@
 		A10000000000000000000403 /* TextFileFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000403 /* TextFileFormat.swift */; };
 		A10000000000000000000404 /* SafeFileWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000404 /* SafeFileWriter.swift */; };
 		A10000000000000000000405 /* WordObjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000405 /* WordObjects.swift */; };
+		A10000000000000000000407 /* WordTypesetter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000407 /* WordTypesetter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -102,6 +104,7 @@
 		B10000000000000000000117 /* UpdaterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterService.swift; sourceTree = "<group>"; };
 		B1000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		B100000000000000000000FE /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
+		B10000000000000000000500 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
 		B1000000000000000000000C /* betterTextEdit.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = betterTextEdit.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000300 /* PDFEditing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFEditing.swift; sourceTree = "<group>"; };
 		B10000000000000000000301 /* TextRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextRecognizer.swift; sourceTree = "<group>"; };
@@ -111,6 +114,7 @@
 		B10000000000000000000403 /* TextFileFormat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextFileFormat.swift; sourceTree = "<group>"; };
 		B10000000000000000000404 /* SafeFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafeFileWriter.swift; sourceTree = "<group>"; };
 		B10000000000000000000405 /* WordObjects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordObjects.swift; sourceTree = "<group>"; };
+		B10000000000000000000407 /* WordTypesetter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordTypesetter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -159,7 +163,7 @@
 		};
 		D10000000000000000000005 /* Services */ = {
 			isa = PBXGroup;
-			children = (B10000000000000000000004 /* FileLanguage.swift */, B10000000000000000000101 /* LanguageDetector.swift */, B10000000000000000000005 /* SyntaxHighlighter.swift */, B1000000000000000000000D /* DocumentImporter.swift */, B1000000000000000000000E /* RichTextMarkdown.swift */, B100000000000000000000F1 /* RichTextDocument.swift */, B100000000000000000000F5 /* ZipArchive.swift */, B10000000000000000000400 /* ZipWriter.swift */, B10000000000000000000401 /* DocxWriter.swift */, B10000000000000000000402 /* DocxReader.swift */, B10000000000000000000405 /* WordObjects.swift */, B10000000000000000000403 /* TextFileFormat.swift */, B10000000000000000000404 /* SafeFileWriter.swift */, B100000000000000000000F6 /* DocxImages.swift */, B100000000000000000000F7 /* PDFImageExtractor.swift */, B100000000000000000000FA /* ImageDocument.swift */, B100000000000000000000FB /* SaveFormat.swift */, B100000000000000000000FC /* PDFExporter.swift */, B10000000000000000000102 /* SVGRasterizer.swift */, B10000000000000000000110 /* EditorTheme.swift */, B10000000000000000000111 /* BuiltInThemes.swift */, B10000000000000000000112 /* VSCodeThemeImporter.swift */, B10000000000000000000113 /* ThemeStore.swift */, B10000000000000000000115 /* FileTypePresets.swift */, B10000000000000000000117 /* UpdaterService.swift */, B10000000000000000000300 /* PDFEditing.swift */, B10000000000000000000301 /* TextRecognizer.swift */,);
+			children = (B10000000000000000000004 /* FileLanguage.swift */, B10000000000000000000101 /* LanguageDetector.swift */, B10000000000000000000005 /* SyntaxHighlighter.swift */, B1000000000000000000000D /* DocumentImporter.swift */, B1000000000000000000000E /* RichTextMarkdown.swift */, B100000000000000000000F1 /* RichTextDocument.swift */, B100000000000000000000F5 /* ZipArchive.swift */, B10000000000000000000400 /* ZipWriter.swift */, B10000000000000000000401 /* DocxWriter.swift */, B10000000000000000000402 /* DocxReader.swift */, B10000000000000000000405 /* WordObjects.swift */, B10000000000000000000407 /* WordTypesetter.swift */, B10000000000000000000403 /* TextFileFormat.swift */, B10000000000000000000404 /* SafeFileWriter.swift */, B100000000000000000000F6 /* DocxImages.swift */, B100000000000000000000F7 /* PDFImageExtractor.swift */, B100000000000000000000FA /* ImageDocument.swift */, B100000000000000000000FB /* SaveFormat.swift */, B100000000000000000000FC /* PDFExporter.swift */, B10000000000000000000102 /* SVGRasterizer.swift */, B10000000000000000000110 /* EditorTheme.swift */, B10000000000000000000111 /* BuiltInThemes.swift */, B10000000000000000000112 /* VSCodeThemeImporter.swift */, B10000000000000000000113 /* ThemeStore.swift */, B10000000000000000000115 /* FileTypePresets.swift */, B10000000000000000000117 /* UpdaterService.swift */, B10000000000000000000300 /* PDFEditing.swift */, B10000000000000000000301 /* TextRecognizer.swift */,);
 			path = Services;
 			sourceTree = "<group>";
 		};
@@ -177,7 +181,7 @@
 		};
 		D10000000000000000000008 /* Resources */ = {
 			isa = PBXGroup;
-			children = (B1000000000000000000000B /* Info.plist */, B100000000000000000000FE /* AppIcon.icns */,);
+			children = (B1000000000000000000000B /* Info.plist */, B100000000000000000000FE /* AppIcon.icns */, B10000000000000000000500 /* Fonts */,);
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -232,6 +236,7 @@
 /* Begin PBXResourcesBuildPhase section */
 		C10000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (
 				A100000000000000000000FE /* AppIcon.icns in Resources */,
+				A10000000000000000000500 /* Fonts in Resources */,
 			); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
@@ -261,6 +266,7 @@
 				A10000000000000000000401 /* DocxWriter.swift in Sources */,
 				A10000000000000000000402 /* DocxReader.swift in Sources */,
 				A10000000000000000000405 /* WordObjects.swift in Sources */,
+				A10000000000000000000407 /* WordTypesetter.swift in Sources */,
 				A10000000000000000000403 /* TextFileFormat.swift in Sources */,
 				A10000000000000000000404 /* SafeFileWriter.swift in Sources */,
 				A10000000000000000000300 /* PDFEditing.swift in Sources */,

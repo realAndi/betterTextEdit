@@ -63,7 +63,7 @@ So betterTextEdit reads and writes the package itself. `.docx` is a ZIP of XML p
 
 **Structure survives too:** bookmarks (so internal links and cross-references still land), content controls round text and round whole paragraphs, named paragraph and character styles — written with their original definitions, so Word's style gallery and table of contents still know them — the document theme, custom document properties, custom XML, and the section's columns, page borders, and line numbering.
 
-Office fonts that macOS doesn't ship — Calibri, Cambria, Aptos — are shown in a close stand-in, and written back under their real names, so a document doesn't change typeface by being opened here. The format bar shows the name the document asked for.
+Office fonts that macOS doesn't ship are shown in a stand-in and written back under their real names, so a document doesn't change typeface by being opened here; the format bar shows the name the document asked for. Calibri and Cambria are shown in Carlito and Caladea, free typefaces betterTextEdit carries (under the SIL Open Font License, in `Resources/Fonts`) that are drawn to the same widths letter for letter, so lines break exactly where Word breaks them. Others go to the macOS face closest in width — Aptos to PT Sans, Book Antiqua to Palatino — and every line is as tall as it would be in the font the document names.
 
 The reader leaves AppKit-native structures behind it — `NSTextList`, `NSTextTable`, `NSTextAttachment` — so the text view edits everything natively, and labels anything Word-specific with attributes of its own, which the writer reads. Those labels are kept off text typed next to a labelled run, so new text after a list marker or a footnote never becomes part of it.
 
